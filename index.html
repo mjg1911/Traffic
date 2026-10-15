@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Arterial — Traffic workshop</title>
+  <link rel="stylesheet" href="styles.css?v=3">
+  <script src="road-editor.js" defer></script>
+  <script src="city-save.js?v=4" defer></script>
+  <script src="game.js?v=6" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#" aria-label="Arterial home"><span class="brand-mark">a<span>↗</span></span><span>arterial<small>TRAFFIC WORKSHOP</small></span></a>
+    <div class="session"><span class="live-dot"></span><span>Riverbend<small>Your local sandbox</small></span></div>
+    <nav aria-label="City and appearance">
+      <button id="btn-save" title="Save city in this browser">Save city</button>
+      <button id="btn-load">Load</button>
+      <button id="btn-export" title="Download a city backup">Export</button>
+      <button id="btn-import">Import</button>
+      <button id="btn-theme" class="theme" aria-label="Switch to dark mode">☾ <span>Dark mode</span></button>
+    </nav>
+  </header>
+  <main id="stage">
+    <canvas id="cv" aria-label="Traffic map. Drag to build a road. Use WASD or hold Space and drag to pan; scroll to zoom."></canvas>
+    <div class="map-label"><span class="live-dot"></span> LIVE NETWORK <span class="separator">/</span> <span id="save-state">Ready to build</span></div>
+    <aside id="sidebar" aria-label="Road construction tools">
+      <div class="panel-heading"><div><span class="eyebrow">YOUR TOOLKIT</span><h1>Shape the flow.</h1></div><span class="panel-icon">↗</span></div>
+      <div class="tool-grid">
+        <button data-tool="ROAD" class="tool"><span>⌁</span>Build road<kbd>1</kbd></button>
+        <button data-tool="BEND" class="tool"><span>⤴</span>Reshape<kbd>B</kbd></button>
+        <button data-tool="UPGRADE" class="tool"><span>⇈</span>Upgrade<kbd>3</kbd></button>
+        <button data-tool="JUNCTION" class="tool"><span>⦿</span>Signals<kbd>4</kbd></button>
+        <button data-tool="ROUNDABOUT" class="tool"><span>↻</span>Roundabout<kbd>5</kbd></button>
+        <button data-tool="BULLDOZE" class="tool"><span>×</span>Remove<kbd>6</kbd></button>
+      </div>
+      <section id="panel-road">
+        <div class="section-title">Road type <span>Q to cycle</span></div>
+        <div class="road-types">
+          <button data-road="STREET"><span class="road-symbol">┆</span><span>Street<small>Neighbourhood connector</small></span><em>1 + 1</em></button>
+          <button data-road="AVENUE"><span class="road-symbol">╎╎</span><span>Avenue<small>Room for the rush hour</small></span><em>2 + 2</em></button>
+          <button data-road="ONEWAY"><span class="road-symbol">↑↑</span><span>One-way<small>Flows in drawing direction</small></span><em>2 →</em></button>
+          <button data-road="HIGHWAY"><span class="road-symbol">╎║╎</span><span>Highway<small>Move traffic across town</small></span><em>3 + 3</em></button>
+        </div>
+        <div id="drawing-options">
+          <div class="section-title">Drawing mode <span>C to switch</span></div>
+          <div class="segmented"><button data-draw="straight">╱ &nbsp; Straight</button><button data-draw="curve">⌒ &nbsp; Curve</button></div>
+          <button id="btn-grid" class="grid-toggle" aria-pressed="false"><span class="grid-icon">⊞</span><span>Lock to grid<small>Straight roads follow N–S / E–W</small></span><span class="switch"></span></button>
+          <div class="snap-status"><span class="live-dot"></span> Junction snapping always on <kbd>G</kbd> grid</div>
+        </div>
+      </section>
+      <section class="tool-help"><span class="help-icon">i</span><p id="hint">Drag between two points to build a straight road.</p></section>
+      <details class="city-details"><summary>City &amp; zoning <span>＋</span></summary>
+        <button data-tool="ZONE" class="zone-tool">▦ &nbsp; Paint zones <kbd>2</kbd></button>
+        <section id="panel-zone" style="display:none"><div class="zones"><button data-zone="1"><i class="dot residential"></i>Homes</button><button data-zone="2"><i class="dot commercial"></i>Shops</button><button data-zone="3"><i class="dot industry"></i>Industry</button></div><small>Drag to paint · Right-drag to erase · Ctrl + scroll for brush size</small></section>
+        <div class="stats"><span>Population <b id="s-pop">0</b></span><span>Jobs <b id="s-jobs">0</b></span><span>Happiness <b id="s-happy">0%</b></span><span>Buildings <b id="s-bld">0</b></span><span>Vehicles <b id="s-cars">0</b></span><span>Avg trip <b id="s-trip">—</b></span><span>Congestion <b id="s-stress">0%</b></span><span>Nodes / roads <b id="s-graph">0 / 0</b></span></div>
+        <div class="demand"><span>Housing demand <i class="track"><i id="bar-r"></i></i></span><span>Shop demand <i class="track"><i id="bar-c"></i></i></span><span>Industry demand <i class="track"><i id="bar-i"></i></i></span></div>
+        <button id="btn-restart">↺ &nbsp; New city</button>
+      </details>
+      <footer>Built on <a href="https://anthonyellis.dev/projects/arterial/" target="_blank" rel="noreferrer">Arterial by Anthony Ellis ↗</a></footer>
+    </aside>
+    <section id="hud" aria-label="Traffic overview">
+      <div class="hud-heading"><span class="eyebrow">TRAFFIC PULSE</span><span class="live-dot"></span></div>
+      <div class="traffic-main"><strong id="h-stress">0%</strong><span>congestion<small id="flow-status">The city is moving</small></span><span class="pulse-lines">▂▅▃▇▅</span></div>
+      <div class="traffic-secondary"><div><span id="h-cars">0</span><small>on the road</small></div><div><span id="h-trip">—</span><small>average trip</small></div><div><span id="h-pop">0</span><small>residents</small></div></div>
+      <div class="flow-track"><i id="flow-fill"></i></div><div class="flow-label"><span>Free flowing</span><span>Gridlocked</span></div>
+    </section>
+    <div class="compass" aria-label="North is up"><b>N</b><span>↑</span></div>
+    <div class="map-legend"><span><i class="dot residential"></i>Residential</span><span><i class="dot commercial"></i>Commercial</span><span><i class="dot industry"></i>Industry</span></div>
+    <div class="view-controls"><button id="btn-zoom-in" aria-label="Zoom in">＋</button><button id="btn-zoom-out" aria-label="Zoom out">−</button><button id="btn-fit" aria-label="Fit city in view" title="Fit city (F)">⛶</button></div>
+    <div class="bottom-bar"><div class="sim-controls"><button id="btn-pause" aria-label="Pause simulation">Pause</button><span class="divider"></span><button id="btn-speed">Speed 1×</button><span class="divider"></span><div id="clock"><span id="sun">◷</span><span id="clock-t">08:00</span></div><button id="btn-debug" title="Show lane routing (L)">Lanes</button></div><div class="navigation-hint"><kbd>WASD</kbd> pan <span>·</span> <kbd>Space</kbd> drag <span>·</span> Scroll zoom <span>·</span> <kbd>Esc</kbd> cancel</div><span class="fps"><span id="h-fps">60</span> fps</span></div>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <div id="tip">A city in motion. Add a connection and see where the traffic goes.</div>
+    <input id="import-file" type="file" accept="application/json,.json" hidden>
+    <dialog id="load-dialog"><form method="dialog"><h2>Load a city</h2><p>Your current unsaved changes will be replaced.</p><div class="dialog-actions"><button value="cancel">Cancel</button><button id="load-manual" value="manual">Load saved city</button><button id="load-recovery" value="recovery">Load recovery</button></div></form></dialog>
+    <dialog id="new-dialog"><form method="dialog"><h2>Start a new city?</h2><p>Save or export first to keep your current road network.</p><div class="dialog-actions"><button value="cancel">Keep playing</button><button id="new-confirm" value="new">New city</button></div></form></dialog>
+  </main>
+</body>
+</html>
