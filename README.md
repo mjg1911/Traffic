@@ -12,6 +12,7 @@ Double-click **Play Arterial.cmd** in this folder to play. You can also open **i
 - **Upgrade (3):** choose a road type, then click an existing road to change it. One-way roads follow the direction they were drawn; select One-way and click an existing one-way road to reverse its direction. Click again to switch it back.
 - **Signals (4):** click a junction with three or more roads to cycle traffic lights, stop and yield control.
 - **Roundabout (5):** click a junction to convert it; click a roundabout node again to restore a normal junction.
+- **Priority road:** choose the tool, then click each road arm that should have right of way. Click an arm again to remove its priority; the other approaches yield.
 - **Remove (6):** click or drag over roads and buildings. Right-click also removes them. Right-click during road drawing cancels instead.
 - **Escape:** cancel the road you are drawing. Changing tools also cancels an unfinished road.
 

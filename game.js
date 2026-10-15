@@ -1948,7 +1948,7 @@ const IN = {
   moved: 0, bendEdge: null, panFrom: null, space: false,
   panKeys: { w: false, a: false, s: false, d: false },
   brush: 62, erase: false, valid: true, msg: '',
-  hoverNode: null, hoverEdge: null, hoverBuilding: null,
+  hoverNode: null, hoverEdge: null, hoverBuilding: null, hoverPriorityArm: null,
   endPt: null, bend: 0, originalBend: 0,
 };
 
@@ -2238,6 +2238,16 @@ cv.addEventListener('pointerdown', e => {
       else if (n && n.isRing) toast('Roundabouts always yield');
       IN.mode = 'idle'; return;
     }
+    case 'PRIORITY': {
+      const target = priorityArmAt(IN.mouse);
+      if (target) {
+        const wasSelected = target.node.control === 'PRIORITY' && target.node.priorityEdges.has(target.edge.id);
+        togglePriorityArm(target.node, target.edge);
+        if (wasSelected) toast(target.node.control === 'YIELD' ? 'Priority road cleared · junction now yields' : 'Priority approach removed');
+        else toast('Priority approach added');
+      } else toast('Click a road arm near a junction with 3+ arms');
+      IN.mode = 'idle'; return;
+    }
     case 'ROUNDABOUT': {
       const n = nodeAt(IN.mouse);
       if (n && n.isRing) { NET.removeRoundabout(n.ringId); toast('Roundabout removed'); }
@@ -2312,6 +2322,7 @@ cv.addEventListener('pointermove', e => {
   const hit = IN.hoverNode ? null : edgeAt(IN.mouse, 2);
   IN.hoverEdge = hit ? hit.edge : null;
   IN.hoverBuilding = (IN.hoverNode || IN.hoverEdge) ? null : CITY.buildingAt(IN.mouse, 4);
+  IN.hoverPriorityArm = W.tool === 'PRIORITY' ? priorityArmAt(IN.mouse) : null;
 });
 
 cv.addEventListener('pointerup', () => {
@@ -2386,7 +2397,7 @@ function hideTip() { const t = $('tip'); if (t) t.style.opacity = '0'; }
 
 function toolCategory(t) {
   if (t === 'ZONE') return 'zones';
-  if (t === 'JUNCTION' || t === 'ROUNDABOUT') return 'junctions';
+  if (t === 'JUNCTION' || t === 'ROUNDABOUT' || t === 'PRIORITY') return 'junctions';
   if (t === 'BULLDOZE') return 'city';
   return 'roads';
 }
@@ -2405,6 +2416,7 @@ function setTool(t) {
     UPGRADE: 'Click a road to change it to the selected type. Select One-way and click a one-way road to reverse its direction.',
     JUNCTION: 'Click a junction with 3+ arms to cycle signal → stop → yield.',
     ROUNDABOUT: 'Click a junction with 3+ arms to convert it. Click a ring to remove it.',
+    PRIORITY: 'Click each road arm near a junction that should have priority. Click an arm again to remove it; select both sides of a through road.',
     BULLDOZE: 'Click or drag over roads and buildings to remove them.',
   };
   $('hint').textContent = hints[t];
@@ -2716,7 +2728,11 @@ function drawSignals() {
         const p = l.path.p2, d = l.path.tangent(1), nn = V.rn(d);
         const x = p.x + nn.x * 7 - d.x * 2, y = p.y + nn.y * 7 - d.y * 2;
         ctx.beginPath();
-        if (n.control === 'STOP') {
+        if (n.control === 'PRIORITY' && n.priorityEdges.has(l.edge.id)) {
+          ctx.save(); ctx.translate(x, y); ctx.rotate(Math.PI / 4);
+          ctx.fillStyle = '#3ddc97'; ctx.fillRect(-2.8, -2.8, 5.6, 5.6);
+          ctx.restore();
+        } else if (n.control === 'STOP') {
           ctx.arc(x, y, 3.2, 0, TAU);
           ctx.fillStyle = '#e8434f'; ctx.fill();
         } else {
@@ -2869,6 +2885,12 @@ function drawOverlays() {
     if ((W.tool === 'JUNCTION' || W.tool === 'ROUNDABOUT') && IN.hoverNode && IN.hoverNode.degree >= 3) {
       ctx.beginPath(); ctx.arc(IN.hoverNode.x, IN.hoverNode.y, IN.hoverNode.r + 7, 0, TAU);
       ctx.strokeStyle = 'rgba(150,200,255,0.9)'; ctx.lineWidth = 2 / CAM.z; ctx.stroke();
+    }
+    if (W.tool === 'PRIORITY' && IN.hoverPriorityArm) {
+      const { node, edge } = IN.hoverPriorityArm;
+      strokePath(edge.centre, edge.width + 5, 'rgba(61,220,151,0.28)');
+      ctx.beginPath(); ctx.arc(node.x, node.y, node.r + 7, 0, TAU);
+      ctx.strokeStyle = 'rgba(61,220,151,0.9)'; ctx.lineWidth = 2 / CAM.z; ctx.stroke();
     }
     if ((W.tool === 'UPGRADE' || W.tool === 'BULLDOZE' || W.tool === 'BEND') && IN.hoverEdge) {
       strokePath(IN.hoverEdge.centre, IN.hoverEdge.width + 4,
