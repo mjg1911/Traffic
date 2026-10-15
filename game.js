@@ -660,6 +660,10 @@ const NET = {
     const i = this.edges.indexOf(e);
     if (i < 0) return;
     this.edges.splice(i, 1);
+    for (const n of [e.n1, e.n2]) {
+      n.priorityEdges.delete(e.id);
+      if (n.control === 'PRIORITY' && n.priorityEdges.size === 0) n.control = 'YIELD';
+    }
     e.n1.edges.splice(e.n1.edges.indexOf(e), 1);
     e.n2.edges.splice(e.n2.edges.indexOf(e), 1);
     const dead = new Set(e.lanes.map(l => l.id));
@@ -733,6 +737,7 @@ const NET = {
       return V.dot(V.sub(path.p1, mid), nrm) / 2;
     };
     const n1 = e.n1, n2 = e.n2, type = e.type;
+    const priorityAtN1 = n1.priorityEdges.has(e.id), priorityAtN2 = n2.priorityEdges.has(e.id);
     const b1 = bendOf(left), b2 = bendOf(right);
     this.removeEdge(e);
     // removeEdge prunes isolated endpoints; splitting must keep both in the graph.
@@ -742,6 +747,8 @@ const NET = {
     const e1 = this.addEdge(n1, mid, type, b1);
     const e2 = this.addEdge(mid, n2, type, b2);
     if (!e1 && !e2) { this.prune(); return null; }
+    if (priorityAtN1 && e1) { n1.priorityEdges.add(e1.id); n1.control = 'PRIORITY'; }
+    if (priorityAtN2 && e2) { n2.priorityEdges.add(e2.id); n2.control = 'PRIORITY'; }
     this.reattachAll();
     return mid;
   },
@@ -836,10 +843,22 @@ const NET = {
   cycleControl(node) {
     if (node.isRing) return;
     const order = ['SIGNAL', 'STOP', 'YIELD'];
+    node.priorityEdges.clear();
     node.control = order[(order.indexOf(node.control) + 1) % order.length];
     buildSignal(node);
   },
 };
+
+function togglePriorityArm(node, edge) {
+  if (node.control !== 'PRIORITY') {
+    node.priorityEdges.clear();
+    node.control = 'PRIORITY';
+  }
+  if (node.priorityEdges.has(edge.id)) node.priorityEdges.delete(edge.id);
+  else node.priorityEdges.add(edge.id);
+  if (node.priorityEdges.size === 0) node.control = 'YIELD';
+  buildSignal(node);
+}
 
 /* ────────────────────────  §4  ROUTING (A*)  ────────────────────────
    Search runs in lane space. Two things fall out of that which a node-space
@@ -1402,6 +1421,13 @@ function signalAllows(node, conn) {
   return g === sg.idx && !sg.amber;
 }
 
+function movementPriority(conn) {
+  if (conn.node.control === 'PRIORITY') {
+    return conn.node.priorityEdges.has(conn.fromLane.edge.id) ? 2 : 1;
+  }
+  return conn.priority;
+}
+
 function arbitrate(cars) {
   const byNode = new Map();
   // Road edits replace connector geometry. Let cars finish the retired paths
@@ -1440,7 +1466,7 @@ function arbitrate(cars) {
 
   for (const [node, reqs] of byNode) {
     if (draining.has(node)) continue;
-    reqs.sort((a, b) => (b.conn.priority - a.conn.priority) ||
+    reqs.sort((a, b) => (movementPriority(b.conn) - movementPriority(a.conn)) ||
                         (b.car.wait - a.car.wait) || (a.dist - b.dist));
     const signalled = node.control === 'SIGNAL' && node.signal && node.signal.phases > 1;
     for (const r of reqs) {
@@ -1452,7 +1478,7 @@ function arbitrate(cars) {
       let blocked = false;
       for (const o of conn.conflicts) {
         if (node.occ.get(o.id)) { blocked = true; break; }
-        if (!signalled && o.priority >= conn.priority) {
+        if (!signalled && movementPriority(o) >= movementPriority(conn)) {
           const src = o.fromLane.vehicles;
           const near = src.length ? src[src.length - 1] : null;
           // A lane can serve several turns. Yield only to the turn this car
