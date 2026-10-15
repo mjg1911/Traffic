@@ -113,7 +113,7 @@
           const rule = object(rawRule, rulePath);
           integer(rule.fromEdgeId, rulePath + '.fromEdgeId', 1, MAX_ID);
           if (typeof rule.fromForward !== 'boolean') invalid(rulePath + '.fromForward', 'must be a boolean');
-          integer(rule.fromLane, rulePath + '.fromLane', 0, 2);
+          integer(rule.fromLane, rulePath + '.fromLane', 0, 4);
           const sourceKey = rule.fromEdgeId + ':' + (rule.fromForward ? 1 : 0) + ':' + rule.fromLane;
           if (sources.has(sourceKey)) invalid(path + '.laneRules', 'must not contain duplicate incoming lanes');
           sources.add(sourceKey);
@@ -231,6 +231,19 @@
     if (data.version === VERSION) {
       nodeById.forEach((node, nodeId) => {
         const nodePath = 'nodes (ID ' + nodeId + ')';
+        if (node.preSorting !== undefined) {
+          const pockets=object(node.preSorting,nodePath+'.preSorting');
+          if(Object.keys(pockets).length>EDGE_LIMIT) invalid(nodePath+'.preSorting','has too many arms');
+          if(Object.keys(pockets).length && (node.isRing || degreeByNode.get(nodeId)<3)) invalid(nodePath+'.preSorting','requires a regular intersection');
+          for(const [key,raw] of Object.entries(pockets)) {
+            const edge=edgeById.get(Number(key)), path=nodePath+'.preSorting.'+key;
+            if(!edge || String(edge.id)!==key || edge.type==='RING' ||
+              (edge.n1!==nodeId && edge.n2!==nodeId) || (ONE_WAY_TYPES.has(edge.type) && edge.n2!==nodeId)) invalid(path,'must reference an incoming incident road');
+            const record=object(raw,path), keys=Object.keys(record);
+            if(!keys.length || keys.some(side=>!['left','right'].includes(side))) invalid(path,'must contain left or right lengths');
+            for(const side of keys) finite(record[side],path+'.'+side,45,500);
+          }
+        }
         if (node.laneRules.length && (node.isRing || degreeByNode.get(nodeId) < 3)) {
           invalid(nodePath + '.laneRules', 'requires a regular junction with at least three road arms');
         }
@@ -243,7 +256,9 @@
           }
           const incomingAtNode = rule.fromForward ? incoming.n2 === nodeId : incoming.n1 === nodeId;
           if (!incomingAtNode) invalid(rulePath, 'incoming direction must travel into the node');
-          if (rule.fromLane >= ROAD_LANES[incoming.type] || (ONE_WAY_TYPES.has(incoming.type) && !rule.fromForward)) {
+          const count=ROAD_LANES[incoming.type], pockets=node.preSorting && node.preSorting[incoming.id];
+          const pocketExists=pockets && ((rule.fromLane===count && pockets.right) || (rule.fromLane===count+1 && pockets.left));
+          if ((rule.fromLane >= count && !pocketExists) || (ONE_WAY_TYPES.has(incoming.type) && !rule.fromForward)) {
             invalid(rulePath + '.fromLane', 'is not a lane entering the node');
           }
           rule.to.forEach((target, targetIndex) => {

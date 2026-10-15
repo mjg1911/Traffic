@@ -6,8 +6,9 @@
   <title>Arterial — Traffic workshop</title>
   <link rel="stylesheet" href="styles.css?v=4">
   <script src="road-editor.js" defer></script>
-  <script src="city-save.js?v=6" defer></script>
-  <script src="game.js?v=10" defer></script>
+  <script src="city-save.js?v=7" defer></script>
+  <script src="pre-sorting.js?v=4" defer></script>
+  <script src="game.js?v=15" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -26,6 +27,7 @@
       <div class="city-stat congestion-stat"><span>Congestion</span><b id="h-stress">0%</b></div>
     </div>
     <nav class="city-actions" aria-label="City and appearance">
+      <button id="btn-new-map" title="Create a blank map">New map</button>
       <button id="btn-save" class="save-action" title="Save city in this browser">Save city</button>
       <button id="btn-load">Load</button>
       <button id="btn-export" title="Download a city backup">Export</button>
@@ -89,7 +91,11 @@
             <button data-zone="2"><i class="dot commercial"></i>Shops</button>
             <button data-zone="3"><i class="dot industry"></i>Industry</button>
           </div>
-          <p class="panel-note">Drag to paint. Right-drag erases. Ctrl + scroll changes brush size.</p>
+          <div class="segmented zone-shapes" role="group" aria-label="Zone painting shape">
+            <button type="button" data-zone-shape="circle" aria-pressed="true">Circle</button>
+            <button type="button" data-zone-shape="rectangle" aria-pressed="false">Rectangle</button>
+          </div>
+          <p class="panel-note">Circle: drag to paint; Ctrl + scroll resizes. Rectangle: drag to fill an area. Right-drag erases with the selected shape.</p>
         </section>
       </section>
 
@@ -100,10 +106,20 @@
           <button data-tool="ROUNDABOUT" class="tool"><span class="tool-icon">↻</span><span>Roundabout<small>Convert or restore a junction</small></span><kbd>5</kbd></button>
           <button data-tool="PRIORITY" class="tool"><span class="tool-icon">◇</span><span>Priority road<small>Choose the approaches with right of way</small></span></button>
           <button data-tool="LANE_CONNECTIONS" class="tool"><span class="tool-icon">↗</span><span>Lane connections<small>Draw where each lane can go</small></span></button>
+          <button data-tool="PRE_SORTING" class="tool"><span class="tool-icon">⇶</span><span>Pre-sorting lanes<small>Add turning lanes one side at a time</small></span></button>
         </div>
         <div id="lane-edit-controls" hidden>
           <p id="lane-edit-status" class="panel-note">Select a regular junction to show its lane connections.</p>
           <button id="btn-lane-reset" class="tool" type="button" disabled><span class="tool-icon">↶</span><span>Reset selected lane</span></button>
+        </div>
+        <div id="pre-sorting-controls" hidden>
+          <p class="panel-note">Extra lanes on one approach</p>
+          <div class="segmented" role="group" aria-label="Number of pre-sorting boxes per approach">
+            <button id="btn-presort-one" type="button" aria-pressed="true">1 box</button>
+            <button id="btn-presort-two" type="button" aria-pressed="false">2 boxes</button>
+          </div>
+          <p class="panel-note">Select a crossing, then click an incoming road arm near it to add lanes on that side. Click the same arm again to remove its lanes. One adds a left-turn lane, or right if left is unavailable; two adds both where available. Changing this choice affects new placements only. Drag blue handles to set lane length.</p>
+          <button id="btn-presort-remove" class="tool" type="button" disabled>Remove all pre-sorting lanes</button>
         </div>
       </section>
 
@@ -160,7 +176,7 @@
     <div id="tip">A city in motion. Add a connection and see where the traffic goes.</div>
     <input id="import-file" type="file" accept="application/json,.json" hidden>
     <dialog id="load-dialog"><form method="dialog"><h2>Load a city</h2><p>Your current unsaved changes will be replaced.</p><div class="dialog-actions"><button value="cancel">Cancel</button><button id="load-manual" value="manual">Load saved city</button><button id="load-recovery" value="recovery">Load recovery</button></div></form></dialog>
-    <dialog id="new-dialog"><form method="dialog"><h2>Start a new city?</h2><p>Save or export first to keep your current road network.</p><div class="dialog-actions"><button value="cancel">Keep playing</button><button id="new-confirm" value="new">New city</button></div></form></dialog>
+    <dialog id="new-dialog"><form method="dialog"><h2 id="new-title">Start a new city?</h2><p id="new-description">Save or export first to keep your current road network.</p><div class="dialog-actions"><button value="cancel">Keep playing</button><button id="new-confirm" value="new">New city</button></div></form></dialog>
   </main>
 </body>
 </html>

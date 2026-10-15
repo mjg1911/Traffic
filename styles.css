@@ -363,6 +363,7 @@ h1 { margin: 6px 0 0; font-size: 21px; font-weight: 650; letter-spacing: -.6px; 
 .zones { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 10px 0; }
 .zones button { display: flex; align-items: center; justify-content: center; gap: 5px; padding: 8px 4px; color: var(--console-text); background: var(--console-raised); border-color: transparent; font-size: 8px; }
 .zones button.on { color: #203747; background: var(--accent); }
+.zone-shapes { margin: 8px 0; }
 .panel-note { margin: 7px 1px 12px; color: var(--console-dim); font-size: 8px; line-height: 1.5; }
 .dot { display: inline-block; width: 8px; height: 8px; flex: 0 0 8px; border-radius: 2px; }
 .residential { background: var(--zr); }

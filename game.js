@@ -387,6 +387,7 @@ class GNode {
     this.id = uid();
     this.x = x; this.y = y;
     this.edges = [];
+    this.preSorting = {};
     this.lanesIn = []; this.lanesOut = [];
     this.connectors = [];
     this.connMap = new Map();
@@ -441,6 +442,7 @@ class Edge {
           back.offset(laneOffset(sp, i)).trim(this.n2.r, this.n1.r)));
       }
     }
+    buildPreSorting(this);
     this.buildMarkings();
   }
 
@@ -455,7 +457,7 @@ class Edge {
     }
     if (sp.mark === 'median') for (const s of [-1, 1]) medians.push(this.centre.offset(s * (sp.median - 0.6)));
     if (this.isBridge) for (const s of [-1, 1]) rails.push(this.centre.offset(s * (this.halfWidth + 1.5)));
-    this.marks = { dividers, medians, rails };
+    this.marks = { dividers: dividers.map((p,i)=>preSortingDivider(this,p,i<n-1)), medians, rails };
   }
   get cost() { return this.centre ? this.centre.length * this.spec.cost : 0; }
 }
@@ -517,7 +519,7 @@ function buildConnectors(node) {
   for (const e of node.edges) {
     for (const l of e.lanes) {
       if (l.to === node) node.lanesIn.push(l);
-      if (l.from === node) node.lanesOut.push(l);
+      if (l.from === node && !l.pocket) node.lanesOut.push(l);
     }
   }
   NET.pruneLaneRules(node);
@@ -534,7 +536,14 @@ function buildConnectors(node) {
       const lo0 = go.lanes[0];
       const d1 = lo0.path.tangent(0);
       const turn = angDiff(h0, Math.atan2(d1.y, d1.x));
-      for (const [ia, ib] of lanePairs(gi.lanes.length, go.lanes.length, turn)) {
+      const ordinary = gi.lanes.filter(l => !l.pocket);
+      const pockets = gi.lanes.filter(l => l.pocket);
+      const side = turn < -.45 ? 'left' : turn > .45 ? 'right' : null;
+      const pocket = pockets.find(l => l.pocket === side);
+      if (pocket && !laneRuleFor(node, pocket)) {
+        makeConnector(node, pocket, side === 'left' ? go.lanes[go.lanes.length - 1] : go.lanes[0], turn);
+      }
+      for (const [ia, ib] of pocket ? [] : lanePairs(ordinary.length, go.lanes.length, turn)) {
         const fromLane = gi.lanes[ia];
         if (!laneRuleFor(node, fromLane)) makeConnector(node, fromLane, go.lanes[ib], turn);
       }
@@ -738,7 +747,10 @@ function buildSignal(node) {
 
 function nodeRadius(n) {
   let hw = 11;
-  for (const e of n.edges) hw = Math.max(hw, e.halfWidth);
+  for (const e of n.edges) {
+    const pockets=n.preSorting[e.id];
+    hw = Math.max(hw, e.halfWidth + (pockets ? (pockets.left ? LW : 0)+(pockets.right ? LW : 0) : 0));
+  }
   // ring nodes stay tight, otherwise a wide arm would over-trim the ring itself
   if (n.isRing) return clamp(hw * 0.7 + 2, 9, 24);
   return clamp(hw * 1.12 + 3 + Math.max(0, n.degree - 2) * 2.2, 13, 78);
@@ -784,6 +796,7 @@ const NET = {
     if (i < 0) return;
     const endpoints = [e.n1, e.n2];
     this.edges.splice(i, 1);
+    for (const n of endpoints) delete n.preSorting[e.id];
     for (const n of endpoints) n.priorityEdges.delete(e.id);
     e.n1.edges.splice(e.n1.edges.indexOf(e), 1);
     e.n2.edges.splice(e.n2.edges.indexOf(e), 1);
@@ -823,19 +836,32 @@ const NET = {
       the connector sets of every node those edges touch. */
   rebuildAround(nodes) {
     const seed = new Set(nodes);
+    for (const n of seed) prunePreSorting(n);
     for (const n of seed) n.r = nodeRadius(n);
     const edges = new Set();
     for (const n of seed) for (const e of n.edges) edges.add(e);
     for (const e of edges) e.build();
     const all = new Set(seed);
     for (const e of edges) { all.add(e.n1); all.add(e.n2); }
+    // A short approach may discard its pockets while rebuilding. Restore the
+    // smaller junction radius immediately instead of leaving a widened gap.
+    const corrected=[...all].filter(n=>n.r!==nodeRadius(n));
+    if(corrected.length) {
+      for(const n of corrected) {n.r=nodeRadius(n);for(const e of n.edges)edges.add(e);}
+      for(const e of edges) {e.build();all.add(e.n1);all.add(e.n2);}
+    }
     for (const n of all) buildConnectors(n);
     this.dirty = true;
   },
 
   rebuildAll() {
+    for (const n of this.nodes) prunePreSorting(n);
     for (const n of this.nodes) n.r = nodeRadius(n);
     for (const e of this.edges) e.build();
+    if(this.nodes.some(n=>n.r!==nodeRadius(n))) {
+      for(const n of this.nodes)n.r=nodeRadius(n);
+      for(const e of this.edges)e.build();
+    }
     for (const n of this.nodes) buildConnectors(n);
     this.dirty = true;
   },
@@ -917,6 +943,7 @@ const NET = {
       return V.dot(V.sub(path.p1, mid), nrm) / 2;
     };
     const n1 = e.n1, n2 = e.n2, type = e.type;
+    const pockets1=n1.preSorting[e.id],pockets2=n2.preSorting[e.id];
     const priorityAtN1 = n1.control === 'PRIORITY' ? new Set(n1.priorityEdges) : null;
     const priorityAtN2 = n2.control === 'PRIORITY' ? new Set(n2.priorityEdges) : null;
     const laneRulesAtN1 = n1.laneRules.map(rule => ({ ...rule, to: rule.to.map(target => ({ ...target })) }));
@@ -929,6 +956,8 @@ const NET = {
     mid.control = 'YIELD';
     const e1 = this.addEdge(n1, mid, type, b1);
     const e2 = this.addEdge(mid, n2, type, b2);
+    if(pockets1 && e1) n1.preSorting[e1.id]={...pockets1};
+    if(pockets2 && e2) n2.preSorting[e2.id]={...pockets2};
     if (!e1 && !e2) { this.prune(); return null; }
     const restorePriority = (node, previous, replacement) => {
       if (!previous) return;
@@ -1172,7 +1201,7 @@ function resyncTrack(c) {
   const g = t.forward ? t.edge.fwd : t.edge.bwd;
   if (!g || !g.length) { c.dead = true; return; }
   if (g.indexOf(t) >= 0) return;
-  const real = g[Math.min(t.idx, g.length - 1)];
+  const real = g.find(l => l.idx === t.idx) || g[Math.min(t.idx, g.length - 1)];
   if (!real) { c.dead = true; return; }
   if (!c.claimClearing) c.releaseClaim();
   c.s = clamp(c.s * (real.length / t.length), 0, real.length);
@@ -1514,14 +1543,19 @@ function considerLaneChange(car, dt) {
 
   const dirToward = mandatory ? Math.sign(want - lane.idx) : 0;
   const cands = [];
-  if (lane.idx + 1 < sibs.length) cands.push(sibs[lane.idx + 1]);
-  if (lane.idx - 1 >= 0) cands.push(sibs[lane.idx - 1]);
+  const ordered = sibs.slice().sort((a,b)=>(a.order ?? a.idx)-(b.order ?? b.idx));
+  const index = ordered.indexOf(lane);
+  if (index + 1 < ordered.length) cands.push(ordered[index + 1]);
+  if (index > 0) cands.push(ordered[index - 1]);
+  const target = sibs.find(l => l.idx === want);
+  const towardOrder = target ? Math.sign((target.order ?? target.idx)-(lane.order ?? lane.idx)) : dirToward;
 
   let best = null, bestScore = CFG.MOBIL_TH;
   for (const T of cands) {
-    const moving = Math.sign(T.idx - lane.idx);
-    if (mandatory && (preSorting || urgency > 0.3) && moving !== dirToward) continue;
-    const sc = mobilScore(car, lane, T, mandatory && moving === dirToward, urgency);
+    if (T.pocket && (T.idx !== want || car.s * T.length / lane.length < T.startS + car.len / 2 + 3)) continue;
+    const moving = Math.sign((T.order ?? T.idx) - (lane.order ?? lane.idx));
+    if (mandatory && (preSorting || urgency > 0.3) && moving !== towardOrder) continue;
+    const sc = mobilScore(car, lane, T, mandatory && moving === towardOrder, urgency);
     // A necessary merge may join slower traffic. Gap and follower safety in
     // mobilScore still apply, but acceleration gain must not postpone it.
     if (preSorting && mandatory && sc !== null) { best = T; break; }
@@ -1586,7 +1620,8 @@ function executeChange(car, T) {
   const old = car.track;
   const sT = clamp(car.s * (T.length / old.length), 0, T.length);
   car.releaseClaim();
-  car.lat += old.offset - T.offset;
+  car.lat += old.path instanceof ApproachPath || T.path instanceof ApproachPath
+    ? V.dot(V.sub(old.pos(car.s), T.pos(sT)), V.rn(T.dir(sT))) : old.offset-T.offset;
   car.track = T;
   car.s = sT;
   car.route[car.ri] = T;
@@ -1771,9 +1806,12 @@ const W = {
   rerouteAll: false,
   tool: 'ROAD',
   laneEditNode: null,
+  preSortingNode: null,
+  preSortingCount: 1,
   laneEditSource: null,
   roadType: 'STREET',
   zoneType: 1,
+  zoneShape: 'circle',
   builtRoad: 0,
   laneChanges: 0,
 };
@@ -1822,6 +1860,14 @@ function crossesWater(a, b) {
 const ZONE_NONE = 0, ZONE_R = 1, ZONE_C = 2, ZONE_I = 3;
 const ZONE_KEY = { 1: 'R', 2: 'C', 3: 'I' };
 const ZONE_COL = { 1: '#4ade80', 2: '#60a5fa', 3: '#fbbf24' };
+
+function zoneRectangleBounds(start, end) {
+  const a = CITY.cellOf(start), b = CITY.cellOf(end), size = CFG.CELL;
+  return {
+    x0: Math.min(a.cx, b.cx) * size, y0: Math.min(a.cy, b.cy) * size,
+    x1: (Math.max(a.cx, b.cx) + 1) * size, y1: (Math.max(a.cy, b.cy) + 1) * size,
+  };
+}
 
 class Building {
   constructor(x, y, type, cell) {
@@ -1885,6 +1931,21 @@ const CITY = {
   cellOf(p) { return { cx: clamp(Math.floor(p.x / CFG.CELL), 0, this.cols - 1), cy: clamp(Math.floor(p.y / CFG.CELL), 0, this.rows - 1) }; },
   cellCentre(cx, cy) { return { x: (cx + 0.5) * CFG.CELL, y: (cy + 0.5) * CFG.CELL }; },
 
+  applyZoneCell(cx, cy, type) {
+    const cc = this.cellCentre(cx, cy);
+    if (pointInWater(cc)) return;
+    const i = this.idx(cx, cy);
+    if (type === ZONE_NONE) {
+      this.zone[i] = 0;
+      const b = this.buildings.find(b => b.cell === i);
+      if (b) this.demolish(b);
+    } else if (this.zone[i] !== type) {
+      const b = this.buildings.find(b => b.cell === i);
+      if (b) this.demolish(b);
+      this.zone[i] = type;
+    }
+  },
+
   paint(p, radius, type) {
     const r = Math.ceil(radius / CFG.CELL);
     const c = this.cellOf(p);
@@ -1894,17 +1955,18 @@ const CITY = {
         if (cx < 0 || cy < 0 || cx >= this.cols || cy >= this.rows) continue;
         const cc = this.cellCentre(cx, cy);
         if (V.dist(cc, p) > radius) continue;
-        if (pointInWater(cc)) continue;
-        const i = this.idx(cx, cy);
-        if (type === ZONE_NONE) {
-          this.zone[i] = 0;
-          const b = this.buildings.find(b => b.cell === i);
-          if (b) this.demolish(b);
-        } else if (this.zone[i] !== type) {
-          const b = this.buildings.find(b => b.cell === i);
-          if (b) this.demolish(b);
-          this.zone[i] = type;
-        }
+        this.applyZoneCell(cx, cy, type);
+      }
+    }
+  },
+
+  paintRectangle(start, end, type) {
+    const a = this.cellOf(start), b = this.cellOf(end);
+    const x0 = Math.min(a.cx, b.cx), x1 = Math.max(a.cx, b.cx);
+    const y0 = Math.min(a.cy, b.cy), y1 = Math.max(a.cy, b.cy);
+    for (let cy = y0; cy <= y1; cy++) {
+      for (let cx = x0; cx <= x1; cx++) {
+        this.applyZoneCell(cx, cy, type);
       }
     }
   },
@@ -1979,6 +2041,12 @@ const CITY = {
       const support = Math.abs(normal.x * u.x + normal.y * u.y) * width / 2 +
         Math.abs(normal.x * v.x + normal.y * v.y) * height / 2;
       if (near.d < e.halfWidth + support) return true;
+      for(const lane of e.lanes) {
+        if(!(lane.path instanceof ApproachPath)) continue;
+        const hit=lane.path.nearest({x:b.x,y:b.y});
+        const p=lane.pos(Math.max(lane.startS||0,hit.s));
+        if(V.dist(p,{x:b.x,y:b.y}) < LW/2+Math.hypot(width,height)/2+1) return true;
+      }
     }
     return false;
   },
@@ -2204,6 +2272,7 @@ const IN = {
   moved: 0, bendEdge: null, panFrom: null, space: false,
   panKeys: { w: false, a: false, s: false, d: false },
   brush: 62, erase: false, valid: true, msg: '',
+  zoneStart: null,
   hoverNode: null, hoverEdge: null, hoverBuilding: null, hoverPriorityArm: null,
   laneFromLane: null, laneToLane: null, hoverLaneIn: null, hoverLaneOut: null,
   endPt: null, bend: 0, originalBend: 0,
@@ -2287,6 +2356,7 @@ function resolveEndpoint(p, allowCreate) {
 }
 
 function cancelDrawing() {
+  IN.pocketDrag = null;
   if (IN.mode === 'bend' && IN.bendEdge) {
     IN.bendEdge.bend = IN.originalBend;
     NET.rebuildAround([IN.bendEdge.n1, IN.bendEdge.n2]);
@@ -2295,6 +2365,7 @@ function cancelDrawing() {
   IN.mode = 'idle'; IN.startPt = null; IN.endPt = null; IN.startNode = null;
   IN.bendEdge = null; IN.panFrom = null; IN.bend = 0;
   IN.laneFromLane = null; IN.laneToLane = null;
+  IN.zoneStart = null;
 }
 
 function drawingPoint(pointer, start) {
@@ -2465,8 +2536,14 @@ cv.addEventListener('pointerdown', e => {
   }
 
   if (W.tool === 'ZONE') {
-    IN.mode = 'zone'; IN.erase = right;
-    CITY.paint(IN.mouse, IN.brush, right ? ZONE_NONE : W.zoneType);
+    IN.erase = right;
+    if (W.zoneShape === 'rectangle') {
+      IN.mode = 'zone-rectangle';
+      IN.zoneStart = { ...IN.mouse };
+    } else {
+      IN.mode = 'zone';
+      CITY.paint(IN.mouse, IN.brush, right ? ZONE_NONE : W.zoneType);
+    }
     return;
   }
 
@@ -2475,6 +2552,41 @@ cv.addEventListener('pointerdown', e => {
     W.laneEditNode = null;
     W.laneEditSource = null;
     syncUI();
+    return;
+  }
+
+  if (W.tool === 'PRE_SORTING') {
+    if (right) { cancelDrawing(); W.preSortingNode=null; syncUI(); return; }
+    const handle = preSortingHandleAt(IN.mouse);
+    if (handle) {
+      const node=W.preSortingNode;
+      IN.pocketDrag={node,edge:handle.edge,side:handle.side,original:node.preSorting[handle.edge.id][handle.side]};
+      IN.mode='presort-resize'; return;
+    }
+    const selected = W.preSortingNode;
+    const hit = selected && edgeAt(IN.mouse, 4);
+    const distanceFromNode = hit && selected
+      ? hit.edge.n1 === selected ? hit.s : hit.edge.centre.length - hit.s
+      : 0;
+    if (hit && selected && selected.edges.includes(hit.edge) && distanceFromNode > selected.r + 1 &&
+      distanceFromNode < hit.edge.centre.length / 2) {
+      const result = togglePreSortingArm(selected, hit.edge, W.preSortingCount);
+      toast(result === 'added' ? 'Turning lanes added on this side'
+        : result === 'removed' ? 'Turning lanes removed from this side'
+        : 'No usable incoming approach or space on this side');
+      syncUI();
+      return;
+    }
+    const node=nodeAt(IN.mouse);
+    if (node && !node.isRing && node.degree>=3) {
+      W.preSortingNode=node;
+      toast(node === selected
+        ? 'Click an incoming road arm to add or remove its turning lanes'
+        : 'Crossing selected · click an incoming road arm to add turning lanes');
+      syncUI();
+    } else toast(selected
+      ? 'Choose an incoming road arm at the selected crossing'
+      : 'Choose a regular intersection with 3+ road arms');
     return;
   }
 
@@ -2585,12 +2697,22 @@ cv.addEventListener('pointermove', e => {
   IN.mouse = CAM.toWorld(sx, sy, cw, ch);
 
   switch (IN.mode) {
+    case 'presort-resize': {
+      const drag=IN.pocketDrag;
+      const lane=drag.node.lanesIn.find(l=>l.edge===drag.edge && l.pocket===drag.side);
+      if (!lane) { cancelDrawing(); return; }
+      const nearest=lane.path.nearest(IN.mouse);
+      drag.preview=clamp(lane.length-nearest.s,45,pocketLimit(drag.edge,drag.node));
+      return;
+    }
     case 'pan':
       CAM.tx = clamp(IN.panFrom.cx - (sx - IN.panFrom.sx) / CAM.z, -400, CFG.WORLD_W + 400);
       CAM.ty = clamp(IN.panFrom.cy - (sy - IN.panFrom.sy) / CAM.z, -400, CFG.WORLD_H + 400);
       return;
     case 'zone':
       CITY.paint(IN.mouse, IN.brush, IN.erase ? ZONE_NONE : W.zoneType);
+      return;
+    case 'zone-rectangle':
       return;
     case 'bulldoze':
       bulldozeAt(IN.mouse);
@@ -2635,7 +2757,29 @@ cv.addEventListener('pointermove', e => {
 
 cv.addEventListener('pointerup', e => {
   const mode = IN.mode;
+  if (mode === 'presort-resize') {
+    const drag=IN.pocketDrag;
+    if(drag && drag.preview!==undefined) resizePreSorting(drag.node,drag.edge,drag.side,drag.preview);
+    IN.mode='idle'; IN.pocketDrag=null; syncUI(); return;
+  }
   if(mode==='curve') return;
+  if (mode === 'zone-rectangle') {
+    const r = cv.getBoundingClientRect();
+    const sx = e.clientX - r.left, sy = e.clientY - r.top;
+    IN.moved += Math.hypot(sx - IN.screen.x, sy - IN.screen.y);
+    IN.screen = { x: sx, y: sy };
+    IN.mouse = CAM.toWorld(sx, sy, cw, ch);
+    const type = IN.erase ? ZONE_NONE : W.zoneType;
+    if (IN.moved < 4) {
+      const cell = CITY.cellOf(IN.zoneStart);
+      CITY.applyZoneCell(cell.cx, cell.cy, type);
+    } else {
+      CITY.paintRectangle(IN.zoneStart, IN.mouse, type);
+    }
+    CITY.reattachDirty = true;
+    IN.mode = 'idle'; IN.zoneStart = null;
+    return;
+  }
   if (mode === 'lane-connect') {
     const r = cv.getBoundingClientRect();
     IN.mouse = CAM.toWorld(e.clientX - r.left, e.clientY - r.top, cw, ch);
@@ -2726,7 +2870,7 @@ function hideTip() { const t = $('tip'); if (t) t.style.opacity = '0'; }
 
 function toolCategory(t) {
   if (t === 'ZONE') return 'zones';
-  if (t === 'JUNCTION' || t === 'ROUNDABOUT' || t === 'PRIORITY' || t === 'LANE_CONNECTIONS') return 'junctions';
+  if (t === 'JUNCTION' || t === 'ROUNDABOUT' || t === 'PRIORITY' || t === 'LANE_CONNECTIONS' || t === 'PRE_SORTING') return 'junctions';
   if (t === 'BULLDOZE') return 'city';
   return 'roads';
 }
@@ -2734,6 +2878,7 @@ function toolCategory(t) {
 function setTool(t) {
   cancelDrawing();
   W.tool = t;
+  if (t !== 'PRE_SORTING') W.preSortingNode=null;
   if (t !== 'LANE_CONNECTIONS') {
     W.laneEditNode = null;
     W.laneEditSource = null;
@@ -2745,23 +2890,35 @@ function setTool(t) {
   const hints = {
     ROAD: EDIT.drawMode === 'straight' ? 'Drag to build a straight road. Start or end on a road to connect it. G locks to the grid.' : 'Drag to set endpoints, release, then move to shape the curve. Click to build. Esc cancels.',
     BEND: 'Drag an existing road to reshape it. Escape restores its original shape.',
-    ZONE: 'Drag to zone land. Right-click erases. Ctrl+wheel resizes the brush.',
+    ZONE: 'Circle: drag to paint. Rectangle: drag to fill a grid-aligned area. Right-click erases with the selected shape; Ctrl+wheel resizes the circle brush.',
     UPGRADE: 'Click a road to change it to the selected type. Select the same one-way type and click its road again to reverse its direction.',
     JUNCTION: 'Click a junction with 3+ arms to cycle signal → stop → yield.',
     ROUNDABOUT: 'Click a junction with 3+ arms to convert it. Click a ring to remove it.',
     PRIORITY: 'Click each road arm near a junction that should have priority. Click an arm again to remove it; select both sides of a through road.',
     LANE_CONNECTIONS: 'Select a junction. Click an incoming lane to select it, or drag to an outgoing lane to toggle that movement. Reset an edited lane to restore automatic turns.',
+    PRE_SORTING: 'Click a crossing, then click incoming road arms to add turning lanes one side at a time. Drag blue handles to set lane lengths.',
     BULLDOZE: 'Click or drag over roads and buildings to remove them.',
   };
   $('hint').textContent = hints[t];
 }
 function setRoadType(t) { W.roadType = t; syncUI(); }
 function setZoneType(z) { W.zoneType = z; syncUI(); }
+function setZoneShape(shape) {
+  if (shape !== 'circle' && shape !== 'rectangle') return;
+  if (IN.mode === 'zone-rectangle') cancelDrawing();
+  W.zoneShape = shape;
+  syncUI();
+}
 
 function syncUI() {
   for (const el of document.querySelectorAll('[data-tool]')) el.classList.toggle('on', el.dataset.tool === W.tool);
   for (const el of document.querySelectorAll('[data-road]')) el.classList.toggle('on', el.dataset.road === W.roadType);
   for (const el of document.querySelectorAll('[data-zone]')) el.classList.toggle('on', +el.dataset.zone === W.zoneType);
+  for (const el of document.querySelectorAll('[data-zone-shape]')) {
+    const active = el.dataset.zoneShape === W.zoneShape;
+    el.classList.toggle('on', active);
+    el.setAttribute('aria-pressed', String(active));
+  }
   const category = toolCategory(W.tool);
   for (const el of document.querySelectorAll('[data-category]')) {
     const active = el.dataset.category === category;
@@ -2777,6 +2934,12 @@ function syncUI() {
   $('btn-pause').setAttribute('aria-label',W.running?'Pause simulation':'Resume simulation');
   $('btn-grid').setAttribute('aria-pressed',String(EDIT.grid));
   const laneControls = $('lane-edit-controls');
+  $('pre-sorting-controls').hidden = W.tool !== 'PRE_SORTING';
+  for(const count of [1,2]) {
+    const button=$(count===1?'btn-presort-one':'btn-presort-two'),selected=W.preSortingCount===count;
+    button.classList.toggle('on',selected);button.setAttribute('aria-pressed',String(selected));
+  }
+  $('btn-presort-remove').disabled = !preSortingHandles(W.preSortingNode).length;
   if (laneControls) laneControls.hidden = W.tool !== 'LANE_CONNECTIONS';
   const laneStatus = $('lane-edit-status');
   if (laneStatus) {
@@ -2800,7 +2963,7 @@ function syncUI() {
 
 /* ─────────────────────────  scene setup  ───────────────────────── */
 
-function restart() {
+function restart(blankMap = false) {
   cancelDrawing();
   _id = 0; _ringSeq = 0;
   if (!SEED_PARAM) SEED = ((Date.now() ^ (Math.random() * 1e9)) >>> 0);
@@ -2811,8 +2974,11 @@ function restart() {
   W.resumeTraffic=false;W.laneChanges=0;W.rerouteAll=false;acc=0;
   W.river = makeRiver();
   CITY.init();
-  initScene();
-  populateStarter();
+  if (blankMap) CITY.reattachDirty = false;
+  else {
+    initScene();
+    populateStarter();
+  }
   CAM.fit(cw, ch);
   CAM.tz = Math.max(CAM.tz, 0.7);
   const tip = $('tip'); if (tip) tip.style.opacity = '1';
@@ -2980,18 +3146,22 @@ function strokePath(path, width, color, dash) {
 function drawRoads(detail) {
   for (const e of NET.edges) {
     if (!e.centre) continue;
-    strokePath(e.centre, e.width + 5, P.roadEdge);
+    if(e.pocketSurface) {ctx.beginPath();tracePreSortingSurface(e);ctx.fillStyle=P.roadEdge;ctx.fill();ctx.lineWidth=5;ctx.strokeStyle=P.roadEdge;ctx.lineJoin='round';ctx.stroke();}
+    else strokePath(e.centre, e.width + 5, P.roadEdge);
   }
   for (const e of NET.edges) {
     if (!e.centre) continue;
-    strokePath(e.centre, e.width, P.road);
+    if(e.pocketSurface) {ctx.beginPath();tracePreSortingSurface(e);ctx.fillStyle=P.road;ctx.fill();}
+    else strokePath(e.centre, e.width, P.road);
   }
-  // junction pads — only as wide as the roads that meet there
+  // Keep the junction pad independent of approach pockets so one widened arm
+  // cannot pull the whole crossing into a pointed polygon.
   for (const n of NET.nodes) {
     if (!n.degree || n.isRing) continue;
     let hw = 11, surf = P.road;
     for (const e of n.edges) if (e.halfWidth > hw) { hw = e.halfWidth; surf = e.spec.surf; }
-    ctx.beginPath(); ctx.arc(n.x, n.y, hw + 2, 0, TAU);
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, hw + 2, 0, TAU);
     ctx.fillStyle = surf; ctx.fill();
   }
   // roundabouts: a clean annulus plus a planted island
@@ -3262,10 +3432,25 @@ function drawLaneConnectionEditor() {
 function drawOverlays() {
   // zone brush
   if (W.tool === 'ZONE') {
-    ctx.beginPath(); ctx.arc(IN.mouse.x, IN.mouse.y, IN.brush, 0, TAU);
-    ctx.strokeStyle = (IN.erase && IN.mode === 'zone') ? 'rgba(255,120,130,0.8)' : ZONE_COL[W.zoneType] + 'cc';
-    ctx.lineWidth = 1.6 / CAM.z; ctx.stroke();
-    ctx.fillStyle = ZONE_COL[W.zoneType] + '14'; ctx.fill();
+    const erasing = IN.erase && (IN.mode === 'zone' || IN.mode === 'zone-rectangle');
+    const color = erasing ? 'rgba(255,120,130,0.8)' : ZONE_COL[W.zoneType] + 'cc';
+    ctx.beginPath();
+    if (W.zoneShape === 'rectangle') {
+      if (IN.mode === 'zone-rectangle' && IN.zoneStart) {
+        const b = zoneRectangleBounds(IN.zoneStart, IN.moved < 4 ? IN.zoneStart : IN.mouse);
+        ctx.rect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
+      }
+    } else {
+      ctx.arc(IN.mouse.x, IN.mouse.y, IN.brush, 0, TAU);
+    }
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.6 / CAM.z;
+    ctx.stroke();
+    if (W.zoneShape === 'circle' || (IN.mode === 'zone-rectangle' && IN.zoneStart)) {
+      ctx.fillStyle = W.zoneShape === 'circle' ? ZONE_COL[W.zoneType] + '14'
+        : erasing ? 'rgba(255,120,130,0.08)' : ZONE_COL[W.zoneType] + '14';
+      ctx.fill();
+    }
   }
   // road preview
   if ((IN.mode === 'build' || IN.mode === 'curve') && IN.startPt && IN.endPt && IN.moved >= 6) {
@@ -3287,6 +3472,7 @@ function drawOverlays() {
     ctx.fillText(IN.msg, mid.x, mid.y - (roadHalfWidth(spec) + 12) / CAM.z);
   }
   drawLaneConnectionEditor();
+  drawPreSortingEditor();
   // hover highlights for the contextual tools
   if (IN.mode === 'idle') {
     if ((W.tool === 'JUNCTION' || W.tool === 'ROUNDABOUT') && IN.hoverNode && IN.hoverNode.degree >= 3) {
@@ -3408,7 +3594,7 @@ function simStep(dt) {
   }
   for (const t of tracks) {
     t.vehicles.sort((a, b) => a.s - b.s);
-    const cap = Math.max(1, t.length / (CFG.CAR_L + CFG.IDM_S0 + 7));
+    const cap = Math.max(1, (t.length-(t.startS||0)) / (CFG.CAR_L + CFG.IDM_S0 + 7));
     t.load = lerp(t.load, clamp(t.vehicles.length / cap, 0, 1), 0.07);
   }
 
@@ -3533,7 +3719,7 @@ const BUILDING_FIELDS=['x','y','type','level','cell','service','starve','since',
 function captureCity() {
   return {
     version:CitySave.VERSION,seed:SEED,time:W.time,
-    nodes:NET.nodes.map(n=>({id:n.id,x:n.x,y:n.y,control:n.control,priorityEdges:[...n.priorityEdges],laneRules:n.laneRules.map(rule=>({...rule,to:rule.to.map(target=>({...target}))})),isRing:n.isRing,ringId:n.ringId})),
+    nodes:NET.nodes.map(n=>({id:n.id,x:n.x,y:n.y,control:n.control,preSorting:JSON.parse(JSON.stringify(n.preSorting)),priorityEdges:[...n.priorityEdges],laneRules:n.laneRules.map(rule=>({...rule,to:rule.to.map(target=>({...target}))})),isRing:n.isRing,ringId:n.ringId})),
     edges:NET.edges.map(e=>({id:e.id,n1:e.n1.id,n2:e.n2.id,type:e.type,bend:e.bend})),
     rings:[...W.rings].map(([id,r])=>({id,cx:r.cx,cy:r.cy,R:r.R,hw:r.hw,nodes:r.nodes.map(n=>n.id)})),
     river:{centre:W.river.centre.map(p=>({x:p.x,y:p.y})),poly:W.river.poly.map(p=>({x:p.x,y:p.y}))},
@@ -3550,7 +3736,7 @@ function restoreCity(raw) {
   let candidate;
   try {
     _id=Math.max(0,...data.nodes.map(n=>n.id),...data.edges.map(e=>e.id));
-    const nodes=data.nodes.map(n=>{const node=new GNode(n.x,n.y);for(const k of ['id','control','isRing','ringId']) node[k]=n[k];node.priorityEdges=new Set(n.priorityEdges);node.laneRules=n.laneRules.map(rule=>({...rule,to:rule.to.map(target=>({...target}))}));return node;});
+    const nodes=data.nodes.map(n=>{const node=new GNode(n.x,n.y);for(const k of ['id','control','isRing','ringId']) node[k]=n[k];node.preSorting=JSON.parse(JSON.stringify(n.preSorting||{}));node.priorityEdges=new Set(n.priorityEdges);node.laneRules=n.laneRules.map(rule=>({...rule,to:rule.to.map(target=>({...target}))}));return node;});
     const byId=new Map(nodes.map(n=>[n.id,n]));
     const edges=data.edges.map(e=>{
       const edge=new Edge(byId.get(e.n1),byId.get(e.n2),e.type,e.bend);edge.id=e.id;
@@ -3640,13 +3826,33 @@ $('btn-pause').onclick = () => { W.running = !W.running; syncUI(); };
 $('btn-speed').onclick = () => { W.speed = W.speed === 1 ? 2 : W.speed === 2 ? 4 : 1; syncUI(); };
 $('btn-debug').onclick = () => { W.debug = !W.debug; syncUI(); };
 $('btn-fit').onclick = () => CAM.fit(cw, ch);
-$('btn-restart').onclick = () => $('new-dialog').showModal();
+function openNewDialog(blankMap) {
+  const dialog = $('new-dialog');
+  const confirm = $('new-confirm');
+  $('new-title').textContent = blankMap ? 'Create a blank map?' : 'Start a new city?';
+  $('new-description').textContent = blankMap
+    ? 'Save or export first to keep your current map.'
+    : 'Save or export first to keep your current road network.';
+  confirm.textContent = blankMap ? 'Create blank map' : 'New city';
+  confirm.value = blankMap ? 'blank' : 'new';
+  dialog.returnValue = 'cancel';
+  dialog.showModal();
+}
+$('btn-restart').onclick = () => openNewDialog(false);
+$('btn-new-map').onclick = () => openNewDialog(true);
 $('btn-lane-reset').onclick = () => {
   const changed = NET.resetLaneConnections(W.laneEditNode, W.laneEditSource);
   toast(changed ? 'Lane restored to automatic connections' : 'Selected lane has no manual override');
   syncUI();
 };
-$('new-dialog').addEventListener('close',()=>{if($('new-dialog').returnValue==='new') restart();});
+$('btn-presort-remove').onclick=()=>{removePreSorting(W.preSortingNode);syncUI();toast('Pre-sorting lanes removed');};
+$('btn-presort-one').onclick=()=>setPreSortingCount(1);
+$('btn-presort-two').onclick=()=>setPreSortingCount(2);
+$('new-dialog').addEventListener('close',()=>{
+  const action = $('new-dialog').returnValue;
+  if (action === 'new') restart();
+  else if (action === 'blank') restart(true);
+});
 $('btn-theme').onclick=()=>applyTheme(theme==='light'?'dark':'light');
 $('btn-save').onclick=()=>saveCity();
 $('btn-load').onclick=()=>{
@@ -3667,6 +3873,7 @@ for(const el of document.querySelectorAll('[data-draw]')) el.onclick=()=>{cancel
 for (const el of document.querySelectorAll('[data-tool]')) el.onclick = () => setTool(el.dataset.tool);
 for (const el of document.querySelectorAll('[data-road]')) el.onclick = () => setRoadType(el.dataset.road);
 for (const el of document.querySelectorAll('[data-zone]')) el.onclick = () => setZoneType(+el.dataset.zone);
+for (const el of document.querySelectorAll('[data-zone-shape]')) el.onclick = () => setZoneShape(el.dataset.zoneShape);
 
 setTool('ROAD');
 syncUI();
@@ -3674,7 +3881,8 @@ applyTheme(theme);
 requestAnimationFrame(frame);
 
 window.ARTERIAL = {
-  W, NET, CITY, CFG, CAM, IN, ROADS, simStep, restart, setTool, setRoadType, setZoneType,
+  addPreSorting, resizePreSorting, removePreSorting, preSortingHandles,
+  W, NET, CITY, CFG, CAM, IN, ROADS, simStep, restart, setTool, setRoadType, setZoneType, setZoneShape,
   EDIT, buildRoad, reshapeRoad, drawingPoint, cancelDrawing, render, applyTheme, captureCity, restoreCity, saveCity, loadSavedCity, exportCity, importCity,
   get seed() { return SEED; },
 };
