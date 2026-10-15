@@ -13,6 +13,7 @@ Double-click **Play Arterial.cmd** in this folder to play. You can also open **i
 - **Signals (4):** click a junction with three or more roads to cycle traffic lights, stop and yield control.
 - **Roundabout (5):** click a junction to convert it; click a roundabout node again to restore a normal junction.
 - **Priority road:** choose the tool, then click each road arm that should have right of way. Click an arm again to remove its priority; the other approaches yield.
+- **Lane connections:** choose the tool and click a regular junction. Click an incoming lane end to select it, or drag from it to an outgoing lane end to add or remove that movement. Only the lane you edit becomes manual; untouched lanes keep their automatic turns. Choose **Reset selected lane** to restore its automatic turns. Roundabouts stay automatic. Changes are saved with the city.
 - **Remove (6):** click or drag over roads and buildings. Right-click also removes them. Right-click during road drawing cancels instead.
 - **Escape:** cancel the road you are drawing. Changing tools also cancels an unfinished road.
 
@@ -28,7 +29,7 @@ Choose **Zones** in the left tool panel for homes, shops and industry. **2** sel
 - The **recovery** slot updates every 30 seconds and when the page closes. A new game starts with a fresh starter city; use Load to resume a saved one. The manual slot changes only when you click Save city.
 - **Export** downloads an `arterial-city.json` backup. **Import** opens one of these backups after validating it. Invalid files leave the current city intact.
 - Browser-local storage belongs to the browser and file location. Clearing browsing data, moving this folder or using another browser can make those saves unavailable. Use Export for lasting backups.
-- Roads, curves, junction types, roundabouts, zoning, buildings, time, camera and drawing settings are saved. Active vehicles start fresh trips after loading; exact in-flight journeys and signal countdowns are not saved.
+- Roads, curves, junction controls, priority approaches, roundabouts, zoning, buildings, time, camera and drawing settings are saved. Active vehicles start fresh trips after loading; exact in-flight journeys and signal countdowns are not saved.
 
 ## Credits and local adaptation
 

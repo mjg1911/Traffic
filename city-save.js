@@ -6,20 +6,24 @@
   'use strict';
 
   const LEGACY_VERSION = 1;
-  const PREVIOUS_VERSION = 2;
-  const VERSION = 3;
+  const ZONE_VERSION = 2;
+  const PRIORITY_VERSION = 3;
+  const VERSION = 4;
   const LEGACY_COLS = Math.ceil(3000 / 34), LEGACY_ROWS = Math.ceil(2000 / 34);
   const CURRENT_COLS = Math.ceil(4800 / 34), CURRENT_ROWS = Math.ceil(3200 / 34);
   const LEGACY_ZONE_COUNT = LEGACY_COLS * LEGACY_ROWS;
   const ZONE_COUNT = CURRENT_COLS * CURRENT_ROWS;
   const NODE_LIMIT = 2000;
   const EDGE_LIMIT = 4000;
+  const LANE_RULE_LIMIT = EDGE_LIMIT * 6;
+  const LANE_MOVEMENT_LIMIT = EDGE_LIMIT * 3;
   const BUILDING_LIMIT = 2000;
   const RING_LIMIT = 500;
   const RIVER_POINT_LIMIT = 1800;
   const TRIP_LIMIT = 1000;
   const MAX_ID = Number.MAX_SAFE_INTEGER - 100000;
   const ROAD_TYPES = new Set(['STREET', 'AVENUE', 'ONEWAY', 'HIGHWAY', 'RING']);
+  const ROAD_LANES = { STREET: 1, AVENUE: 2, ONEWAY: 2, HIGHWAY: 3, RING: 1 };
   const ZONE_BUILDING_TYPES = { 1: 'R', 2: 'C', 3: 'I' };
 
   function invalid(path, detail) {
@@ -72,7 +76,7 @@
   function validate(data) {
     object(data, 'save');
     const zoneCount = data.version === LEGACY_VERSION ? LEGACY_ZONE_COUNT :
-      data.version === PREVIOUS_VERSION || data.version === VERSION ? ZONE_COUNT : 0;
+      [ZONE_VERSION, PRIORITY_VERSION, VERSION].includes(data.version) ? ZONE_COUNT : 0;
     if (!zoneCount) invalid('version', 'is unsupported');
     integer(data.seed, 'seed', 0, 0xFFFFFFFF);
     finite(data.time, 'time', 0, 1e9);
@@ -86,9 +90,10 @@
       uniqueId(node.id, path + '.id', nodeIds);
       finite(node.x, path + '.x', -10000, 10000);
       finite(node.y, path + '.y', -10000, 10000);
-      const controls = data.version === VERSION ? ['YIELD', 'STOP', 'SIGNAL', 'PRIORITY'] : ['YIELD', 'STOP', 'SIGNAL'];
+      const hasPriority = data.version === PRIORITY_VERSION || data.version === VERSION;
+      const controls = hasPriority ? ['YIELD', 'STOP', 'SIGNAL', 'PRIORITY'] : ['YIELD', 'STOP', 'SIGNAL'];
       if (!controls.includes(node.control)) invalid(path + '.control', 'is not supported by this save version');
-      if (data.version === VERSION) {
+      if (hasPriority) {
         const priorityEdges = array(node.priorityEdges, path + '.priorityEdges', EDGE_LIMIT);
         const selected = new Set();
         priorityEdges.forEach((edgeId, edgeIndex) => {
@@ -99,7 +104,35 @@
         if (node.control === 'PRIORITY' && !selected.size) invalid(path + '.priorityEdges', 'must select an approach for a priority junction');
         if (node.control !== 'PRIORITY' && selected.size) invalid(path + '.priorityEdges', 'must be empty unless the node uses priority control');
       }
+      if (data.version === VERSION) {
+        const laneRules = array(node.laneRules, path + '.laneRules', LANE_RULE_LIMIT);
+        const sources = new Set();
+        laneRules.forEach((rawRule, ruleIndex) => {
+          const rulePath = path + '.laneRules[' + ruleIndex + ']';
+          const rule = object(rawRule, rulePath);
+          integer(rule.fromEdgeId, rulePath + '.fromEdgeId', 1, MAX_ID);
+          if (typeof rule.fromForward !== 'boolean') invalid(rulePath + '.fromForward', 'must be a boolean');
+          integer(rule.fromLane, rulePath + '.fromLane', 0, 2);
+          const sourceKey = rule.fromEdgeId + ':' + (rule.fromForward ? 1 : 0) + ':' + rule.fromLane;
+          if (sources.has(sourceKey)) invalid(path + '.laneRules', 'must not contain duplicate incoming lanes');
+          sources.add(sourceKey);
+          const destinations = array(rule.to, rulePath + '.to', LANE_MOVEMENT_LIMIT, 1);
+          const targetKeys = new Set();
+          destinations.forEach((rawTarget, targetIndex) => {
+            const targetPath = rulePath + '.to[' + targetIndex + ']';
+            const target = object(rawTarget, targetPath);
+            integer(target.edgeId, targetPath + '.edgeId', 1, MAX_ID);
+            if (typeof target.forward !== 'boolean') invalid(targetPath + '.forward', 'must be a boolean');
+            integer(target.lane, targetPath + '.lane', 0, 2);
+            if (target.edgeId === rule.fromEdgeId) invalid(targetPath, 'must not make a mid-junction U-turn');
+            const targetKey = target.edgeId + ':' + (target.forward ? 1 : 0) + ':' + target.lane;
+            if (targetKeys.has(targetKey)) invalid(rulePath + '.to', 'must not contain duplicate outgoing lanes');
+            targetKeys.add(targetKey);
+          });
+        });
+      }
       if (typeof node.isRing !== 'boolean') invalid(path + '.isRing', 'must be a boolean');
+      if (node.control === 'PRIORITY' && node.isRing) invalid(path + '.control', 'cannot use priority control on a roundabout node');
       integer(node.ringId, path + '.ringId', 0, MAX_ID);
       nodeById.set(node.id, node);
     });
@@ -143,6 +176,7 @@
     const edges = array(data.edges, 'edges', EDGE_LIMIT);
     const edgeIds = new Set();
     const edgeById = new Map();
+    const degreeByNode = new Map(nodes.map(node => [node.id, 0]));
     const connections = new Set();
     edges.forEach((raw, index) => {
       const path = 'edges[' + index + ']';
@@ -151,6 +185,8 @@
       edgeById.set(edge.id, edge);
       integer(edge.n1, path + '.n1', 1, MAX_ID);
       integer(edge.n2, path + '.n2', 1, MAX_ID);
+      degreeByNode.set(edge.n1, (degreeByNode.get(edge.n1) || 0) + 1);
+      degreeByNode.set(edge.n2, (degreeByNode.get(edge.n2) || 0) + 1);
       const n1 = nodeById.get(edge.n1);
       const n2 = nodeById.get(edge.n2);
       if (!n1 || !n2) invalid(path, 'references an unknown node ID');
@@ -176,14 +212,51 @@
       }
     });
 
-    if (data.version === VERSION) {
+    if (data.version === PRIORITY_VERSION || data.version === VERSION) {
       nodeById.forEach((node, nodeId) => {
+        if (node.control === 'PRIORITY' && degreeByNode.get(nodeId) < 3) {
+          invalid('nodes', 'contains a priority junction with fewer than three road arms');
+        }
         for (const edgeId of node.priorityEdges) {
           const edge = edgeById.get(edgeId);
           if (!edge) invalid('nodes', 'contains a priority approach that references an unknown edge ID');
           if (edge.type === 'RING' || (edge.n1 !== nodeId && edge.n2 !== nodeId)) {
             invalid('nodes', 'contains a priority approach that is not a non-ring incident road');
           }
+        }
+      });
+    }
+
+    if (data.version === VERSION) {
+      nodeById.forEach((node, nodeId) => {
+        const nodePath = 'nodes (ID ' + nodeId + ')';
+        if (node.laneRules.length && (node.isRing || degreeByNode.get(nodeId) < 3)) {
+          invalid(nodePath + '.laneRules', 'requires a regular junction with at least three road arms');
+        }
+        for (let ruleIndex = 0; ruleIndex < node.laneRules.length; ruleIndex++) {
+          const rule = node.laneRules[ruleIndex];
+          const rulePath = nodePath + '.laneRules[' + ruleIndex + ']';
+          const incoming = edgeById.get(rule.fromEdgeId);
+          if (!incoming || incoming.type === 'RING' || (incoming.n1 !== nodeId && incoming.n2 !== nodeId)) {
+            invalid(rulePath + '.fromEdgeId', 'must reference a non-ring road incident to the node');
+          }
+          const incomingAtNode = rule.fromForward ? incoming.n2 === nodeId : incoming.n1 === nodeId;
+          if (!incomingAtNode) invalid(rulePath, 'incoming direction must travel into the node');
+          if (rule.fromLane >= ROAD_LANES[incoming.type] || (incoming.type === 'ONEWAY' && !rule.fromForward)) {
+            invalid(rulePath + '.fromLane', 'is not a lane entering the node');
+          }
+          rule.to.forEach((target, targetIndex) => {
+            const targetPath = rulePath + '.to[' + targetIndex + ']';
+            const outgoing = edgeById.get(target.edgeId);
+            if (!outgoing || outgoing.type === 'RING' || (outgoing.n1 !== nodeId && outgoing.n2 !== nodeId)) {
+              invalid(targetPath + '.edgeId', 'must reference a non-ring road incident to the node');
+            }
+            const outgoingFromNode = target.forward ? outgoing.n1 === nodeId : outgoing.n2 === nodeId;
+            if (!outgoingFromNode) invalid(targetPath, 'outgoing direction must travel away from the node');
+            if (target.lane >= ROAD_LANES[outgoing.type] || (outgoing.type === 'ONEWAY' && !target.forward)) {
+              invalid(targetPath + '.lane', 'is not a lane leaving the node');
+            }
+          });
         }
       });
     }
@@ -259,28 +332,43 @@
   function migrate(data) {
     validate(data);
     if (data.version === VERSION) return data;
-    if (data.version === PREVIOUS_VERSION) {
+    if (data.version === PRIORITY_VERSION) {
       return validate({
         ...data,
         version: VERSION,
-        nodes: data.nodes.map(node => ({ ...node, priorityEdges: [] })),
+        nodes: data.nodes.map(node => ({ ...node, laneRules: [] })),
       });
     }
-    const migrated = {
-      ...data,
-      version: VERSION,
-      nodes: data.nodes.map(node => ({ ...node, priorityEdges: [] })),
-      zones: new Array(ZONE_COUNT).fill(0),
-      buildings: data.buildings.map(building => ({
-        ...building,
-        cell: Math.floor(building.cell / LEGACY_COLS) * CURRENT_COLS + (building.cell % LEGACY_COLS),
-      })),
-    };
-    for (let oldCell = 0; oldCell < data.zones.length; oldCell++) {
-      const row = Math.floor(oldCell / LEGACY_COLS), column = oldCell % LEGACY_COLS;
-      migrated.zones[row * CURRENT_COLS + column] = data.zones[oldCell];
+    let priorityData;
+    if (data.version === ZONE_VERSION) {
+      priorityData = {
+        ...data,
+        version: PRIORITY_VERSION,
+        nodes: data.nodes.map(node => ({ ...node, priorityEdges: [] })),
+      };
+    } else {
+      const migrated = {
+        ...data,
+        version: PRIORITY_VERSION,
+        nodes: data.nodes.map(node => ({ ...node, priorityEdges: [] })),
+        zones: new Array(ZONE_COUNT).fill(0),
+        buildings: data.buildings.map(building => ({
+          ...building,
+          cell: Math.floor(building.cell / LEGACY_COLS) * CURRENT_COLS + (building.cell % LEGACY_COLS),
+        })),
+      };
+      for (let oldCell = 0; oldCell < data.zones.length; oldCell++) {
+        const row = Math.floor(oldCell / LEGACY_COLS), column = oldCell % LEGACY_COLS;
+        migrated.zones[row * CURRENT_COLS + column] = data.zones[oldCell];
+      }
+      priorityData = migrated;
     }
-    return validate(migrated);
+    validate(priorityData);
+    return validate({
+      ...priorityData,
+      version: VERSION,
+      nodes: priorityData.nodes.map(node => ({ ...node, laneRules: [] })),
+    });
   }
 
   return { VERSION, ZONE_COUNT, validate, migrate };
