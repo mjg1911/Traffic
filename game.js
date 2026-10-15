@@ -100,9 +100,10 @@ const ROADS = {
   AVENUE:  { key:'AVENUE',  name:'Avenue',    lanes:2, oneway:false, median:5,   speed: 128, cost:2.4,  surf:'#303b50', mark:'median' },
   HIGHWAY: { key:'HIGHWAY', name:'Highway',   lanes:3, oneway:false, median:9,   speed: 186, cost:4.4,  surf:'#354158', mark:'median' },
   ONEWAY:  { key:'ONEWAY',  name:'One-way',   lanes:2, oneway:true,  median:0,   speed: 112, cost:1.7,  surf:'#2e394f', mark:'arrow' },
+  ONEWAY_SINGLE: { key:'ONEWAY_SINGLE', name:'One-way single', lanes:1, oneway:true, median:0, speed:112, cost:1.7, surf:'#2e394f', mark:'arrow' },
   RING:    { key:'RING',    name:'Roundabout',lanes:1, oneway:true,  median:0,   speed:  62, cost:0.0,  surf:'#303b50', mark:'arrow' },
 };
-const ROAD_ORDER = ['STREET', 'AVENUE', 'ONEWAY', 'HIGHWAY'];
+const ROAD_ORDER = ['STREET', 'AVENUE', 'ONEWAY', 'ONEWAY_SINGLE', 'HIGHWAY'];
 
 function roadHalfWidth(spec) {
   return spec.oneway ? (spec.lanes * LW) / 2 + 3 : spec.median + spec.lanes * LW + 3;
@@ -372,6 +373,7 @@ class Connector extends Track {
     this.from = node; this.to = node;
     this.turn = turn;
     this.conflicts = [];
+    this.conflictZones = new Map();
     // ring traffic outranks everything; otherwise the wider road has priority
     this.priority = fromLane.edge.type === 'RING' ? 3 : fromLane.edge.spec.lanes;
     const r = path.radius(0.5);
@@ -570,6 +572,54 @@ function makeConnector(node, li, lo, turn) {
   node.connMap.set(li.id + '>' + lo.id, conn);
 }
 
+function pairedConflictZones(a, b, pointsA, pointsB) {
+  const cols = pointsB.length;
+  const cells = new Uint8Array(pointsA.length * cols);
+  const R2 = CFG.CONFLICT_R * CFG.CONFLICT_R;
+  const active = [];
+  for (let i = 0; i < pointsA.length; i++) for (let j = 0; j < pointsB.length; j++) {
+    const dx = pointsA[i].x - pointsB[j].x;
+    const dy = pointsA[i].y - pointsB[j].y;
+    if (dx * dx + dy * dy >= R2) continue;
+    const cell = i * cols + j;
+    cells[cell] = 1;
+    active.push(cell);
+  }
+  if (!active.length) return [];
+
+  const visited = new Uint8Array(cells.length);
+  const stepA = a.length / Math.max(pointsA.length - 1, 1);
+  const stepB = b.length / Math.max(pointsB.length - 1, 1);
+  const zones = [];
+  for (const first of active) {
+    if (visited[first]) continue;
+    visited[first] = 1;
+    const queue = [first];
+    let minI = pointsA.length, maxI = -1, minJ = pointsB.length, maxJ = -1;
+    for (let k = 0; k < queue.length; k++) {
+      const cell = queue[k], i = Math.floor(cell / cols), j = cell % cols;
+      minI = Math.min(minI, i); maxI = Math.max(maxI, i);
+      minJ = Math.min(minJ, j); maxJ = Math.max(maxJ, j);
+      for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+        if (di === 0 && dj === 0) continue;
+        const ni = i + di, nj = j + dj;
+        if (ni < 0 || ni >= pointsA.length || nj < 0 || nj >= pointsB.length) continue;
+        const next = ni * cols + nj;
+        if (!cells[next] || visited[next]) continue;
+        visited[next] = 1;
+        queue.push(next);
+      }
+    }
+    zones.push({
+      start: clamp((minI - 1) * stepA, 0, a.length),
+      end: clamp((maxI + 1) * stepA, 0, a.length),
+      otherStart: clamp((minJ - 1) * stepB, 0, b.length),
+      otherEnd: clamp((maxJ + 1) * stepB, 0, b.length),
+    });
+  }
+  return zones.sort((x, y) => x.start - y.start);
+}
+
 function connectorPathGeometry(conn) {
   const pts = [];
   const S = Math.max(8, Math.ceil(conn.length / 6));
@@ -610,7 +660,7 @@ function connectorPathsConflict(a, b) {
     outbound lane always conflict, because that is a merge. */
 function computeConflicts(node) {
   const cs = node.connectors;
-  for (const c of cs) c.conflicts = [];
+  for (const c of cs) { c.conflicts = []; c.conflictZones = new Map(); }
   const R = CFG.CONFLICT_R;
   const pts = cs.map(c => {
     const a = [];
@@ -647,68 +697,37 @@ function computeConflicts(node) {
           }
         }
       }
-      if (hit) { a.conflicts.push(b); b.conflicts.push(a); }
+      if (hit) {
+        const zones = pairedConflictZones(a, b, pts[i], pts[j]);
+        a.conflicts.push(b); b.conflicts.push(a);
+        if (zones.length) {
+          a.conflictZones.set(b, zones);
+          b.conflictZones.set(a, zones.map(z => ({
+            start: z.otherStart, end: z.otherEnd,
+            otherStart: z.start, otherEnd: z.end,
+          })).sort((x, y) => x.start - y.start));
+        }
+      }
     }
   }
 }
 
-/** Assign compatible incoming approaches to the same signal phase. */
+/** Cluster opposing approaches into two phases using their undirected road axes. */
 function buildSignal(node) {
   if (node.control !== 'SIGNAL' || node.degree < 3) { node.signal = null; return; }
   const prev = node.signal;
   const group = new Map();
-  const approaches = approachGroups(node.lanesIn);
-  const approachOf = new Map();
-  approaches.forEach((approach, i) => {
-    for (const lane of approach.lanes) approachOf.set(lane.id, i);
-  });
-
-  // Two approach groups conflict when any movements from them conflict. The
-  // connector conflict map is built immediately before this function runs.
-  const conflicts = approaches.map(() => new Set());
-  for (const conn of node.connectors) {
-    const a = approachOf.get(conn.fromLane.id);
-    if (a === undefined) continue;
-    for (const other of conn.conflicts) {
-      const b = approachOf.get(other.fromLane.id);
-      if (b === undefined || a === b) continue;
-      conflicts[a].add(b);
-      conflicts[b].add(a);
-    }
+  let ref = null;
+  for (const approach of approachGroups(node.lanesIn)) {
+    const direction = approach.lanes[0].dir(approach.lanes[0].length);
+    const axis = ((Math.atan2(direction.y, direction.x) % Math.PI) + Math.PI) % Math.PI;
+    if (ref === null) ref = axis;
+    let difference = Math.abs(axis - ref);
+    difference = Math.min(difference, Math.PI - difference);
+    const phase = difference < Math.PI / 4 ? 0 : 1;
+    for (const lane of approach.lanes) group.set(lane.id, phase);
   }
-
-  // Deterministic DSATUR coloring gives the most constrained approaches a
-  // phase first, while reusing a phase whenever none of its approaches conflict.
-  const phasesByApproach = new Array(approaches.length).fill(-1);
-  for (let remaining = approaches.length; remaining > 0; remaining--) {
-    let chosen = -1, bestSaturation = -1, bestDegree = -1;
-    for (let i = 0; i < approaches.length; i++) {
-      if (phasesByApproach[i] !== -1) continue;
-      const saturation = new Set([...conflicts[i]]
-        .map(j => phasesByApproach[j]).filter(phase => phase !== -1)).size;
-      if (saturation > bestSaturation ||
-          (saturation === bestSaturation && conflicts[i].size > bestDegree)) {
-        chosen = i;
-        bestSaturation = saturation;
-        bestDegree = conflicts[i].size;
-      }
-    }
-    const used = new Set([...conflicts[chosen]]
-      .map(i => phasesByApproach[i]).filter(phase => phase !== -1));
-    let phase = 0;
-    while (used.has(phase)) phase++;
-    phasesByApproach[chosen] = phase;
-  }
-
-  // Keep SIGNAL control meaningfully timed for degree-3+ nodes even if a
-  // degenerate layout produces no connector conflict edges at all.
-  if (approaches.length > 1 && phasesByApproach.every(phase => phase === 0)) {
-    for (let i = 0; i < phasesByApproach.length; i++) phasesByApproach[i] = i % 2;
-  }
-  approaches.forEach((approach, i) => {
-    for (const lane of approach.lanes) group.set(lane.id, phasesByApproach[i]);
-  });
-  const phases = phasesByApproach.length ? Math.max(...phasesByApproach) + 1 : 1;
+  const phases = new Set(group.values()).size || 1;
   node.signal = {
     group, phases,
     idx: prev ? prev.idx % phases : 0,
@@ -792,7 +811,7 @@ const NET = {
   },
 
   reverseOneWay(e) {
-    if (!e || e.type !== 'ONEWAY') return false;
+    if (!e || !ROADS[e.type] || !ROADS[e.type].oneway || e.type === 'RING') return false;
     [e.n1, e.n2] = [e.n2, e.n1];
     e.bend = -e.bend;
     this.rebuildAround([e.n1, e.n2]);
@@ -937,7 +956,10 @@ const NET = {
     return mid;
   },
 
-  reattachAll() { CITY.reattachDirty = true; },
+  reattachAll() {
+    CITY.clearRoadOverlaps();
+    CITY.reattachDirty = true;
+  },
 
   /* ── roundabouts: a graph rewrite, not a simulation special case ── */
 
@@ -1961,6 +1983,12 @@ const CITY = {
     return false;
   },
 
+  clearRoadOverlaps() {
+    for (const b of this.buildings.slice()) {
+      if (this.overlapsRoad(b)) this.demolish(b);
+    }
+  },
+
   /* ---- development ----
      Only cells with road access can develop, so the candidate set is derived
      from the network itself: stamp every cell within reach of a road, then
@@ -2356,7 +2384,7 @@ function reshapeRoad(edge,bend) {
     if(pathsOverlap(path,other.centre)||pathIntersections(path,other).some(h=>h.t>.003&&h.t<.997)) return {ok:false,msg:'That bend crosses a road. Build a new connection instead.'};
   }
   edge.bend=bend;edge.isBridge=crossesWater(edge.n1.pos,edge.n2.pos);
-  NET.rebuildAround([edge.n1,edge.n2]);CITY.reattachDirty=true;markReroute();
+  NET.rebuildAround([edge.n1,edge.n2]);CITY.clearRoadOverlaps();CITY.reattachDirty=true;markReroute();
   return {ok:true,msg:'Road reshaped'};
 }
 
@@ -2407,6 +2435,7 @@ function buildRoad(a,b,bend=0) {
     if(e) {created.push(e);W.builtRoad+=e.centre.length;}
   }
   if(!created.length) return {ok:false,msg:'Those junctions already have a road'};
+  CITY.clearRoadOverlaps();
   hideTip(); CITY.reattachDirty=true;markReroute();
   return {ok:true,msg:created.length>1?'Road connected through '+(created.length-1)+' new junctions':'Road connected'};
 }
@@ -2496,7 +2525,7 @@ cv.addEventListener('pointerdown', e => {
     case 'UPGRADE': {
       const hit = edgeAt(IN.mouse, 4);
       if (hit && hit.edge.type !== 'RING') {
-        if (hit.edge.type === W.roadType && hit.edge.type === 'ONEWAY') {
+        if (hit.edge.type === W.roadType && ROADS[hit.edge.type].oneway) {
           NET.reverseOneWay(hit.edge); markReroute(); toast('One-way direction reversed');
         }
         else if (hit.edge.type === W.roadType) toast(`Already a ${ROADS[W.roadType].name.toLowerCase()}`);
@@ -2717,7 +2746,7 @@ function setTool(t) {
     ROAD: EDIT.drawMode === 'straight' ? 'Drag to build a straight road. Start or end on a road to connect it. G locks to the grid.' : 'Drag to set endpoints, release, then move to shape the curve. Click to build. Esc cancels.',
     BEND: 'Drag an existing road to reshape it. Escape restores its original shape.',
     ZONE: 'Drag to zone land. Right-click erases. Ctrl+wheel resizes the brush.',
-    UPGRADE: 'Click a road to change it to the selected type. Select One-way and click a one-way road to reverse its direction.',
+    UPGRADE: 'Click a road to change it to the selected type. Select the same one-way type and click its road again to reverse its direction.',
     JUNCTION: 'Click a junction with 3+ arms to cycle signal → stop → yield.',
     ROUNDABOUT: 'Click a junction with 3+ arms to convert it. Click a ring to remove it.',
     PRIORITY: 'Click each road arm near a junction that should have priority. Click an arm again to remove it; select both sides of a through road.',

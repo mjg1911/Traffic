@@ -22,8 +22,9 @@
   const RIVER_POINT_LIMIT = 1800;
   const TRIP_LIMIT = 1000;
   const MAX_ID = Number.MAX_SAFE_INTEGER - 100000;
-  const ROAD_TYPES = new Set(['STREET', 'AVENUE', 'ONEWAY', 'HIGHWAY', 'RING']);
-  const ROAD_LANES = { STREET: 1, AVENUE: 2, ONEWAY: 2, HIGHWAY: 3, RING: 1 };
+  const ROAD_TYPES = new Set(['STREET', 'AVENUE', 'ONEWAY', 'ONEWAY_SINGLE', 'HIGHWAY', 'RING']);
+  const ROAD_LANES = { STREET: 1, AVENUE: 2, ONEWAY: 2, ONEWAY_SINGLE: 1, HIGHWAY: 3, RING: 1 };
+  const ONE_WAY_TYPES = new Set(['ONEWAY', 'ONEWAY_SINGLE']);
   const ZONE_BUILDING_TYPES = { 1: 'R', 2: 'C', 3: 'I' };
 
   function invalid(path, detail) {
@@ -242,7 +243,7 @@
           }
           const incomingAtNode = rule.fromForward ? incoming.n2 === nodeId : incoming.n1 === nodeId;
           if (!incomingAtNode) invalid(rulePath, 'incoming direction must travel into the node');
-          if (rule.fromLane >= ROAD_LANES[incoming.type] || (incoming.type === 'ONEWAY' && !rule.fromForward)) {
+          if (rule.fromLane >= ROAD_LANES[incoming.type] || (ONE_WAY_TYPES.has(incoming.type) && !rule.fromForward)) {
             invalid(rulePath + '.fromLane', 'is not a lane entering the node');
           }
           rule.to.forEach((target, targetIndex) => {
@@ -253,7 +254,7 @@
             }
             const outgoingFromNode = target.forward ? outgoing.n1 === nodeId : outgoing.n2 === nodeId;
             if (!outgoingFromNode) invalid(targetPath, 'outgoing direction must travel away from the node');
-            if (target.lane >= ROAD_LANES[outgoing.type] || (outgoing.type === 'ONEWAY' && !target.forward)) {
+            if (target.lane >= ROAD_LANES[outgoing.type] || (ONE_WAY_TYPES.has(outgoing.type) && !target.forward)) {
               invalid(targetPath + '.lane', 'is not a lane leaving the node');
             }
           });
@@ -324,7 +325,7 @@
     const settings = object(data.settings, 'settings');
     if (typeof settings.grid !== 'boolean') invalid('settings.grid', 'must be a boolean');
     if (!['straight', 'curve'].includes(settings.drawMode)) invalid('settings.drawMode', 'must be straight or curve');
-    if (!['STREET', 'AVENUE', 'ONEWAY', 'HIGHWAY'].includes(settings.roadType)) invalid('settings.roadType', 'must be a standard road type');
+    if (!['STREET', 'AVENUE', 'ONEWAY', 'ONEWAY_SINGLE', 'HIGHWAY'].includes(settings.roadType)) invalid('settings.roadType', 'must be a standard road type');
 
     return data;
   }

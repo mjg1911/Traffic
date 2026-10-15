@@ -9,7 +9,7 @@ Double-click **Play Arterial.cmd** in this folder to play. You can also open **i
 - **Lock to grid (G):** show a 50-unit grid and snap your road endpoints. Straight roads are constrained to north–south or east–west. An existing junction can be off-grid; a road starting there stays aligned with that junction.
 - Start or finish on an existing road to connect it. Roads crossing one another form a junction automatically. Leave space between junctions; cramped connections are rejected without changing the network.
 - **Reshape (B):** drag the middle of an existing road to bend it. Escape restores its shape while dragging. Bends that would create an unconnected crossing are rejected; draw a new connecting road instead.
-- **Upgrade (3):** choose a road type, then click an existing road to change it. One-way roads follow the direction they were drawn; select One-way and click an existing one-way road to reverse its direction. Click again to switch it back.
+- **Upgrade (3):** choose a road type, then click an existing road to change it. One-way single carries one lane and One-way carries two; both follow their drawn direction. Select the same one-way type and click that road to reverse its direction.
 - **Signals (4):** click a junction with three or more roads to cycle traffic lights, stop and yield control.
 - **Roundabout (5):** click a junction to convert it; click a roundabout node again to restore a normal junction.
 - **Priority road:** choose the tool, then click each road arm that should have right of way. Click an arm again to remove its priority; the other approaches yield.

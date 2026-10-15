@@ -78,6 +78,18 @@ test('nearby paths with insufficient truck clearance still conflict',()=>{
   assert.ok(a.conflicts.includes(b));
 });
 
+test('conflicting connectors retain paired path intervals',()=>{
+  const f=junction('STREET','YIELD');
+  const a=f.node.connectors.find(c=>Math.abs(c.turn)<.1);
+  const b=a.conflicts.find(c=>c.fromLane.edge!==a.fromLane.edge);
+  const zones=a.conflictZones && a.conflictZones.get(b);
+  const reverse=b.conflictZones && b.conflictZones.get(a);
+  assert.ok(Array.isArray(zones) && zones.length>0);
+  assert.ok(Array.isArray(reverse) && reverse.length>0);
+  assert.ok(zones.every(z=>Number.isFinite(z.start) && Number.isFinite(z.end) &&
+    Number.isFinite(z.otherStart) && Number.isFinite(z.otherEnd)));
+});
+
 test('crossing movements and shared exit lanes remain mutually exclusive',()=>{
   const f=junction('STREET','YIELD');
   const a=f.node.connectors.find(c=>Math.abs(c.turn)<.1);
@@ -101,6 +113,19 @@ test('yield ignores a nearby car whose actual turn does not conflict',()=>{
   f.arbitrate();
   assert.ok(first.claim===a);
   assert.equal(other.claim,null,'far car should not reserve early');
+});
+
+test('a safe gap is not blocked by priority traffic inside the old lookahead',()=>{
+  const f=junction('AVENUE','YIELD');
+  const a=f.node.connectors.find(c=>c.turn<-.45);
+  const b=a.conflicts.find(c=>c.fromLane.edge!==a.fromLane.edge);
+  assert.ok(b);
+  f.node.control='PRIORITY';
+  f.node.priorityEdges=new Set([b.fromLane.edge.id]);
+  const turning=f.car(a,{distance:18,speed:0});
+  f.car(b,{distance:77,speed:4});
+  f.arbitrate();
+  assert.equal(turning.claim,a,'the turn clears before the slow priority car reaches the shared zone');
 });
 
 test('yield still waits for an approaching car on a conflicting route',()=>{
