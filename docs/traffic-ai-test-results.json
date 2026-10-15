@@ -1,0 +1,16 @@
+{
+  "date": "2026-10-15",
+  "command": "node --test --test-concurrency=2 tests/*.test.cjs",
+  "passed": 158,
+  "failed": 0,
+  "skipped": 0,
+  "durationMs": 130773.5518,
+  "syntaxChecks": [
+    "game.js",
+    "pre-sorting.js",
+    "traffic-diagnostics.js"
+  ],
+  "diffCheck": "passed",
+  "headlessDebugRendering": "passed",
+  "browserVisualCheck": "blocked: local file URLs are not allowed by browser automation policy"
+}

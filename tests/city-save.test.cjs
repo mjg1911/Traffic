@@ -57,8 +57,8 @@ function assertInvalid(mutator, pattern = /invalid city save/i) {
 
 test('valid version 1 city with roads, ring, river, zones, buildings and trips passes unchanged', () => {
   const data = validCity();
-  assert.equal(CitySave.VERSION, 1);
-  assert.equal(CitySave.ZONE_COUNT, ZONE_COUNT);
+  assert.equal(CitySave.VERSION, 4);
+  assert.equal(CitySave.ZONE_COUNT, Math.ceil(4800 / 34) * Math.ceil(3200 / 34));
   assert.equal(CitySave.validate(data), data);
 });
 
@@ -67,7 +67,7 @@ test('CitySave is available as a browser global as well as CommonJS', () => {
   const browser = {};
   vm.runInNewContext(source, browser);
   assert.equal(typeof browser.CitySave?.validate, 'function');
-  assert.equal(browser.CitySave.VERSION, 1);
+  assert.equal(browser.CitySave.VERSION, 4);
   assert.equal(browser.CitySave.validate(validCity()).version, 1);
 });
 

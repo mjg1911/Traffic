@@ -1,0 +1,268 @@
+{
+  "baseline": true,
+  "seed": 42,
+  "seconds": 59.99999999999702,
+  "trips": 86,
+  "tripsPerMinute": 86,
+  "laneChanges": 113,
+  "peak": 145,
+  "peakReservations": 24,
+  "uniqueOverlapPairs": 21,
+  "illegalEntries": 0,
+  "scans": 3600,
+  "truncated": 0,
+  "summary": {
+    "trips": {
+      "count": 86,
+      "average": 39.73139534883588,
+      "median": 39.6499999999989,
+      "p95": 62.52499999999751,
+      "min": 7.483333333333597,
+      "max": 68.48333333333062
+    },
+    "perTrip": {
+      "routeChanges": {
+        "count": 0,
+        "average": null,
+        "median": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "laneChanges": {
+        "count": 0,
+        "average": null,
+        "median": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "missedTurns": {
+        "count": 0,
+        "average": null,
+        "median": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      }
+    },
+    "waitReasons": {},
+    "laneChanges": {
+      "count": 0,
+      "succeeded": 0,
+      "failed": 0,
+      "averageDuration": null,
+      "p95Duration": null
+    },
+    "routeChanges": {
+      "count": 0,
+      "byReason": {}
+    },
+    "reservationLead": {
+      "count": 0,
+      "average": null,
+      "median": null,
+      "p95": null
+    },
+    "safety": {
+      "overlaps": 357,
+      "nearMisses": 49887,
+      "inconclusivePairs": 0,
+      "incompleteScans": 0
+    },
+    "performance": {
+      "samples": 3600,
+      "averageFrameMs": 0.5704758611111096,
+      "p95FrameMs": 0.7849149999999098,
+      "maxFrameMs": 2.1805999999996857,
+      "maxVehicleCount": 145
+    },
+    "retainedEvents": 500
+  },
+  "examples": [
+    {
+      "ids": [
+        1428,
+        1541
+      ],
+      "time": 13.666666666666925,
+      "cars": [
+        {
+          "kind": "LANE",
+          "s": 268.11103200330336,
+          "v": 0.010377934761776097,
+          "track": 743,
+          "change": false
+        },
+        {
+          "kind": "CONN",
+          "s": 42.69118433076812,
+          "v": 56.67183777086958,
+          "track": 771,
+          "change": false
+        }
+      ]
+    },
+    {
+      "ids": [
+        1415,
+        1430
+      ],
+      "time": 15.266666666667005,
+      "cars": [
+        {
+          "kind": "LANE",
+          "s": 164.70869398066716,
+          "v": 38.52966507440924,
+          "track": 566,
+          "change": false
+        },
+        {
+          "kind": "LANE",
+          "s": 144.89042898408508,
+          "v": 88.78677168053555,
+          "track": 565,
+          "change": false
+        }
+      ]
+    },
+    {
+      "ids": [
+        1402,
+        1445
+      ],
+      "time": 27.18333333333307,
+      "cars": [
+        {
+          "kind": "LANE",
+          "s": 60.54114020714469,
+          "v": 5.596484607283415,
+          "track": 330,
+          "change": false
+        },
+        {
+          "kind": "LANE",
+          "s": 63.882038253874484,
+          "v": 0,
+          "track": 329,
+          "change": false
+        }
+      ]
+    },
+    {
+      "ids": [
+        1411,
+        1440
+      ],
+      "time": 28.383333333333002,
+      "cars": [
+        {
+          "kind": "LANE",
+          "s": 96.66696263546608,
+          "v": 17.41186320106311,
+          "track": 565,
+          "change": false
+        },
+        {
+          "kind": "LANE",
+          "s": 78.29052687127722,
+          "v": 60.34399897792787,
+          "track": 566,
+          "change": false
+        }
+      ]
+    },
+    {
+      "ids": [
+        1403,
+        1439
+      ],
+      "time": 30.899999999999526,
+      "cars": [
+        {
+          "kind": "LANE",
+          "s": 15.339895555217703,
+          "v": 77.37890346598,
+          "track": 798,
+          "change": false
+        },
+        {
+          "kind": "CONN",
+          "s": 2.417463046093639,
+          "v": 58.042519737551565,
+          "track": 880,
+          "change": false
+        }
+      ]
+    },
+    {
+      "ids": [
+        1402,
+        1449
+      ],
+      "time": 33.96666666666602,
+      "cars": [
+        {
+          "kind": "LANE",
+          "s": 106.55284330844263,
+          "v": 63.919930244979646,
+          "track": 330,
+          "change": false
+        },
+        {
+          "kind": "LANE",
+          "s": 125.94940226321128,
+          "v": 7.873404496710045,
+          "track": 329,
+          "change": false
+        }
+      ]
+    },
+    {
+      "ids": [
+        1388,
+        1445
+      ],
+      "time": 37.999999999999126,
+      "cars": [
+        {
+          "kind": "CONN",
+          "s": 8.074060108367654,
+          "v": 65.20703435498706,
+          "track": 363,
+          "change": false
+        },
+        {
+          "kind": "CONN",
+          "s": 9.124445081926225,
+          "v": 69.97671981408084,
+          "track": 364,
+          "change": false
+        }
+      ]
+    },
+    {
+      "ids": [
+        1402,
+        1500
+      ],
+      "time": 39.6166666666657,
+      "cars": [
+        {
+          "kind": "LANE",
+          "s": 236.0530470174485,
+          "v": 60.03411338086026,
+          "track": 330,
+          "change": false
+        },
+        {
+          "kind": "LANE",
+          "s": 250.82546307652515,
+          "v": 4.498556017340664,
+          "track": 329,
+          "change": false
+        }
+      ]
+    }
+  ]
+}

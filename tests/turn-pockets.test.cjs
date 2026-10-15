@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const vm=require('node:vm');
 const loadGame=require('./harness.cjs');
 function fixture(type='STREET',bend=0) {
-  const f=loadGame(),a=f.api;
+  const f=loadGame({blank:true}),a=f.api;
   a.W.cars=[];a.NET.nodes=[];a.NET.edges=[];
   const node=a.NET.addNode(600,600);
   for(const [x,y] of [[600,100],[1100,600],[600,1100],[100,600]]) a.NET.addEdge(a.NET.addNode(x,y),node,type,bend);
@@ -32,7 +32,7 @@ test('cars cannot enter a turning pocket upstream of its mouth',()=>{
   c.setRoute([lane,conn,conn.toLane],dest.lane,dest.s);c.s=10;c.v=20;c.changeCd=0;
   h.considerLaneChange(c,1/60);assert.ok(c.track===lane);
   c.s=pocket.startS+30;c.changeCd=0;
-  h.considerLaneChange(c,1/60);assert.ok(c.track===pocket);
+  h.considerLaneChange(c,1/60);assert.ok(c.manoeuvre?.target===pocket);
   assert.ok(Math.abs(c.lat)<=a.CFG.LANE_W*1.1);
 });
 test('pocket lengths resize independently, clamp to the approach and survive saves',()=>{
@@ -72,6 +72,7 @@ test('pointer resize previews and cancellation preserve authored lengths',()=>{
   a.setTool('PRE_SORTING');
   const event=p=>({button:0,clientX:p.x,clientY:p.y,pointerId:1,shiftKey:false});
   events['cv:pointerdown'](event(node.pos));
+  a.addPreSorting(node); // Selecting a crossing does not author pockets until an arm is clicked.
   const handle=a.preSortingHandles(node)[0],original=node.preSorting[handle.edge.id][handle.side];
   events['cv:pointerdown'](event(handle.pos));
   const p=handle.lane.pos(handle.lane.length-240);
@@ -194,4 +195,14 @@ test('one-box placement falls back to a right pocket where only a right turn exi
   const record=node.preSorting[incoming.edge.id];
   assert.ok(record?.right);
   assert.equal(record.left,undefined);
+});
+
+test('minimum pockets warn when free-flow speed cannot finish the merge',()=>{
+  const {a,node,context}=fixture();a.addPreSorting(node,2);
+  const lane=node.lanesIn.find(l=>l.pocket==='left');
+  vm.runInContext('globalThis.pocketWarning=pocketUsability',context);
+  const short=context.pocketWarning(lane,45);
+  assert.ok(short.requiresSlowing);
+  assert.ok(short.mergeSpeed<lane.speedLimit);
+  assert.equal(a.CFG.WORLD_UNITS_PER_METRE,3);
 });

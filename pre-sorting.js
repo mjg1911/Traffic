@@ -205,6 +205,13 @@ function preSortingHandleAt(p) {
     .sort((a,b) => V.dist(a.pos,p) - V.dist(b.pos,p))[0] || null;
 }
 
+function pocketUsability(lane, length = lane.length-lane.startS, vehicleLength = CFG.TRUCK_L) {
+  const usable=Math.max(0,length-vehicleLength-CFG.STOPLINE-CFG.IDM_S0-5);
+  const mergeSpeed=usable/CFG.CHANGE_TIME*.85;
+  return {mergeSpeed,requiresSlowing:mergeSpeed<lane.speedLimit,
+    unusable:usable<Math.max(15.5,LW*1.4),usable,metres:length/CFG.WORLD_UNITS_PER_METRE};
+}
+
 function drawPreSortingEditor() {
   ctx.save();
   for (const node of NET.nodes) for (const lane of node.lanesIn) {
@@ -239,7 +246,12 @@ function drawPreSortingEditor() {
     const direction=lane.dir(start),normal=V.rn(direction),side=lane.pocket==='right'?1:-1;
     const label=V.add(pos,V.mul(normal,side*15/Math.max(.5,CAM.z)));
     ctx.textAlign=label.x<pos.x-1?'right':'left';ctx.textBaseline='bottom';
-    ctx.fillText(`${Math.round(length)} m`,label.x,label.y-5/CAM.z);
+    const usability=pocketUsability(lane,length);
+    ctx.fillText(`${Math.round(usability.metres)} m${usability.requiresSlowing?' · slow merge':''}`,label.x,label.y-5/CAM.z);
+    if(usability.requiresSlowing) {
+      ctx.fillStyle='#e9a23b';
+      ctx.fillText(usability.unusable?'Too short for trucks':`Trucks: ${Math.max(0,Math.round(usability.mergeSpeed/CFG.WORLD_UNITS_PER_METRE*3.6))} km/h`,label.x,label.y+10/CAM.z);
+    }
   }
   ctx.restore();
 }

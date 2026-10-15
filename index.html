@@ -4,11 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Arterial — Traffic workshop</title>
-  <link rel="stylesheet" href="styles.css?v=4">
+  <link rel="stylesheet" href="styles.css?v=6">
   <script src="road-editor.js" defer></script>
   <script src="city-save.js?v=7" defer></script>
   <script src="pre-sorting.js?v=4" defer></script>
-  <script src="game.js?v=15" defer></script>
+  <script src="traffic-diagnostics.js?v=1" defer></script>
+  <script src="game.js?v=20" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -43,7 +44,10 @@
     <aside id="sidebar" aria-label="City building tools">
       <div class="panel-heading">
         <div><span class="eyebrow">CITY TOOLS</span><h1>Build the city</h1></div>
-        <span class="panel-icon">↗</span>
+        <div class="panel-heading-actions">
+          <button id="btn-text-size" class="text-size-toggle" type="button" aria-label="Increase City Tools text size" aria-pressed="false" title="Increase text size">A+</button>
+          <span class="panel-icon" aria-hidden="true">↗</span>
+        </div>
       </div>
 
       <div class="category-tabs" role="group" aria-label="Tool categories">
@@ -118,14 +122,30 @@
             <button id="btn-presort-one" type="button" aria-pressed="true">1 box</button>
             <button id="btn-presort-two" type="button" aria-pressed="false">2 boxes</button>
           </div>
-          <p class="panel-note">Select a crossing, then click an incoming road arm near it to add lanes on that side. Click the same arm again to remove its lanes. One adds a left-turn lane, or right if left is unavailable; two adds both where available. Changing this choice affects new placements only. Drag blue handles to set lane length.</p>
+          <p class="panel-note">Select a crossing, then hover an incoming arm for a green preview. Click to add lanes on that side; click it again to remove them. One adds a left-turn lane, or right if left is unavailable; two adds both where available. Changing this choice affects new placements only. Drag blue handles to set lane length.</p>
           <button id="btn-presort-remove" class="tool" type="button" disabled>Remove all pre-sorting lanes</button>
         </div>
       </section>
 
       <section class="category-panel" id="panel-city" data-category-panel="city" aria-label="City management" hidden>
         <div class="section-title">City management <span>Live overview</span></div>
-        <button data-tool="BULLDOZE" class="tool primary-tool"><span class="tool-icon">×</span><span>Remove roads or buildings</span><kbd>6</kbd></button>
+        <button id="btn-city-removal" type="button" class="tool primary-tool" aria-pressed="false"><span class="tool-icon">×</span><span id="city-removal-label">Remove roads or buildings · Off</span><kbd>6</kbd></button>
+        <p class="panel-note">Click a vehicle on the map to inspect its movement state.</p>
+        <section id="car-inspector" class="car-inspector" aria-label="Selected vehicle diagnostics" hidden>
+          <div class="section-title">Selected vehicle <span>Live diagnostics</span></div>
+          <div class="car-debug-list">
+            <div class="car-debug-row"><span>Vehicle</span><b id="car-debug-identity">—</b></div>
+            <div class="car-debug-row"><span>Speed / desired</span><b id="car-debug-speed">—</b></div>
+            <div class="car-debug-row"><span>Continuous stop</span><b id="car-debug-stopped">—</b></div>
+            <div class="car-debug-row"><span>Current track</span><b id="car-debug-track">—</b></div>
+            <div class="car-debug-row"><span>Route / next movement</span><b id="car-debug-route">—</b></div>
+            <div class="car-debug-row"><span>Nearest leader</span><b id="car-debug-leader">—</b></div>
+            <div class="car-debug-row"><span>Junction claim</span><b id="car-debug-claim">—</b></div>
+            <div class="car-debug-row"><span>Arbiter wait reason</span><b id="car-debug-wait">—</b></div>
+            <div class="car-debug-row car-debug-limiter"><span>Motion constraint · last step</span><b id="car-debug-limiter">—</b></div>
+            <div class="car-debug-row"><span>Speed caps</span><b id="car-debug-speed-caps">—</b></div>
+          </div>
+        </section>
         <div class="stats" aria-label="City statistics">
           <span>Population<b id="s-pop">0</b></span>
           <span>Jobs<b id="s-jobs">0</b></span>
@@ -135,6 +155,10 @@
           <span>Average trip<b id="s-trip">—</b></span>
           <span>Congestion<b id="s-stress">0%</b></span>
           <span>Junctions / roads<b id="s-graph">0 / 0</b></span>
+          <span>Queued vehicles<b id="s-queued">0</b></span>
+          <span>Trips per minute<b id="s-throughput">0</b></span>
+          <span>95% of trips within<b id="s-trip-p95">—</b></span>
+          <span>Main queue cause<b id="s-wait-cause">—</b></span>
         </div>
         <div class="demand" aria-label="Development demand">
           <span>Housing demand<i class="track"><i id="bar-r"></i></i></span>

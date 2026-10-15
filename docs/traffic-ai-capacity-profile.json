@@ -1,0 +1,254 @@
+[
+  {
+    "capacity": 60,
+    "baseline": false,
+    "seed": 42,
+    "seconds": 5.00000000000014,
+    "trips": 0,
+    "tripsPerMinute": 0,
+    "laneChanges": 0,
+    "peak": 60,
+    "peakReservations": 0,
+    "uniqueOverlapPairs": 0,
+    "illegalEntries": 0,
+    "scans": 300,
+    "truncated": 0,
+    "summary": {
+      "trips": {
+        "count": 0,
+        "average": null,
+        "median": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "perTrip": {
+        "routeChanges": {
+          "count": 0,
+          "average": null,
+          "median": null,
+          "p95": null,
+          "min": null,
+          "max": null
+        },
+        "laneChanges": {
+          "count": 0,
+          "average": null,
+          "median": null,
+          "p95": null,
+          "min": null,
+          "max": null
+        },
+        "missedTurns": {
+          "count": 0,
+          "average": null,
+          "median": null,
+          "p95": null,
+          "min": null,
+          "max": null
+        }
+      },
+      "waitReasons": {},
+      "laneChanges": {
+        "count": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "averageDuration": null,
+        "p95Duration": null
+      },
+      "routeChanges": {
+        "count": 0,
+        "byReason": {}
+      },
+      "reservationLead": {
+        "count": 0,
+        "average": null,
+        "median": null,
+        "p95": null
+      },
+      "safety": {
+        "overlaps": 0,
+        "nearMisses": 6981,
+        "inconclusivePairs": 0,
+        "incompleteScans": 0
+      },
+      "performance": {
+        "samples": 300,
+        "averageFrameMs": 0.5313276666666328,
+        "p95FrameMs": 0.839924999999721,
+        "maxFrameMs": 1.1057000000000698,
+        "maxVehicleCount": 60
+      },
+      "retainedEvents": 500
+    },
+    "examples": []
+  },
+  {
+    "capacity": 120,
+    "baseline": false,
+    "seed": 42,
+    "seconds": 5.00000000000014,
+    "trips": 0,
+    "tripsPerMinute": 0,
+    "laneChanges": 0,
+    "peak": 120,
+    "peakReservations": 0,
+    "uniqueOverlapPairs": 0,
+    "illegalEntries": 0,
+    "scans": 300,
+    "truncated": 0,
+    "summary": {
+      "trips": {
+        "count": 0,
+        "average": null,
+        "median": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "perTrip": {
+        "routeChanges": {
+          "count": 0,
+          "average": null,
+          "median": null,
+          "p95": null,
+          "min": null,
+          "max": null
+        },
+        "laneChanges": {
+          "count": 0,
+          "average": null,
+          "median": null,
+          "p95": null,
+          "min": null,
+          "max": null
+        },
+        "missedTurns": {
+          "count": 0,
+          "average": null,
+          "median": null,
+          "p95": null,
+          "min": null,
+          "max": null
+        }
+      },
+      "waitReasons": {},
+      "laneChanges": {
+        "count": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "averageDuration": null,
+        "p95Duration": null
+      },
+      "routeChanges": {
+        "count": 0,
+        "byReason": {}
+      },
+      "reservationLead": {
+        "count": 0,
+        "average": null,
+        "median": null,
+        "p95": null
+      },
+      "safety": {
+        "overlaps": 0,
+        "nearMisses": 15643,
+        "inconclusivePairs": 0,
+        "incompleteScans": 0
+      },
+      "performance": {
+        "samples": 300,
+        "averageFrameMs": 0.9271196666667129,
+        "p95FrameMs": 1.5453600000004373,
+        "maxFrameMs": 2.017700000000332,
+        "maxVehicleCount": 120
+      },
+      "retainedEvents": 500
+    },
+    "examples": []
+  },
+  {
+    "capacity": 240,
+    "baseline": false,
+    "seed": 42,
+    "seconds": 5.00000000000014,
+    "trips": 0,
+    "tripsPerMinute": 0,
+    "laneChanges": 0,
+    "peak": 240,
+    "peakReservations": 0,
+    "uniqueOverlapPairs": 0,
+    "illegalEntries": 0,
+    "scans": 300,
+    "truncated": 0,
+    "summary": {
+      "trips": {
+        "count": 0,
+        "average": null,
+        "median": null,
+        "p95": null,
+        "min": null,
+        "max": null
+      },
+      "perTrip": {
+        "routeChanges": {
+          "count": 0,
+          "average": null,
+          "median": null,
+          "p95": null,
+          "min": null,
+          "max": null
+        },
+        "laneChanges": {
+          "count": 0,
+          "average": null,
+          "median": null,
+          "p95": null,
+          "min": null,
+          "max": null
+        },
+        "missedTurns": {
+          "count": 0,
+          "average": null,
+          "median": null,
+          "p95": null,
+          "min": null,
+          "max": null
+        }
+      },
+      "waitReasons": {},
+      "laneChanges": {
+        "count": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "averageDuration": null,
+        "p95Duration": null
+      },
+      "routeChanges": {
+        "count": 0,
+        "byReason": {}
+      },
+      "reservationLead": {
+        "count": 0,
+        "average": null,
+        "median": null,
+        "p95": null
+      },
+      "safety": {
+        "overlaps": 0,
+        "nearMisses": 32532,
+        "inconclusivePairs": 0,
+        "incompleteScans": 0
+      },
+      "performance": {
+        "samples": 300,
+        "averageFrameMs": 1.8165460000000107,
+        "p95FrameMs": 2.6268500000015615,
+        "maxFrameMs": 3.568699999999808,
+        "maxVehicleCount": 240
+      },
+      "retainedEvents": 500
+    },
+    "examples": []
+  }
+]

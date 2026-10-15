@@ -4,7 +4,7 @@ const vm = require('node:vm');
 const loadGame = require('./harness.cjs');
 
 function approach(type = 'AVENUE') {
-  const {api:a, context} = loadGame();
+  const {api:a, context} = loadGame({blank:true});
   vm.runInContext('globalThis.laneHooks = {Car, considerLaneChange, arbitrate, buildSignal}', context);
   const h = context.laneHooks;
   a.W.cars = []; a.NET.nodes = []; a.NET.edges = [];
@@ -38,7 +38,7 @@ test('left-turning cars stay in their approach lane instead of passing a red-lig
   f.car(f.turn.fromLane,140);
   f.index();
   f.h.considerLaneChange(c,1/60);
-  assert.equal(c.track.idx,f.turn.fromLane.idx);
+  assert.ok(c.track===f.turn.fromLane || c.manoeuvre?.target===f.turn.fromLane);
 });
 
 test('cars pre-sort into a slower turn queue as soon as a safe gap is available',()=>{
@@ -48,7 +48,7 @@ test('cars pre-sort into a slower turn queue as soon as a safe gap is available'
   c.changeCd = f.a.CFG.CHANGE_CD;
   f.index();
   f.h.considerLaneChange(c,1/60);
-  assert.equal(c.track.idx,f.turn.fromLane.idx);
+  assert.ok(c.track===f.turn.fromLane || c.manoeuvre?.target===f.turn.fromLane);
 });
 
 test('mandatory pre-sorting prioritizes a safe gap over the acceleration advantage',()=>{
@@ -57,14 +57,14 @@ test('mandatory pre-sorting prioritizes a safe gap over the acceleration advanta
   f.car(f.turn.fromLane,190);
   f.index();
   f.h.considerLaneChange(c,1/60);
-  assert.equal(c.track.idx,f.turn.fromLane.idx);
+  assert.ok(c.track===f.turn.fromLane || c.manoeuvre?.target===f.turn.fromLane);
 });
 
 test('a car still moving sideways cannot reserve a junction',()=>{
   const f = approach();
   const c = f.car(f.turn.fromLane,18,10);
   c.lat = f.a.CFG.LANE_W;
-  f.node.signal.idx = f.node.signal.group.get(f.turn.fromLane.id);
+  f.node.signal.idx = (f.node.signal.movementGroup?.get(f.turn.id) ?? f.node.signal.group.get(f.turn.fromLane.id));
   f.index(); f.h.arbitrate(f.a.W.cars);
   assert.ok(c.claim===null);
 });
@@ -108,15 +108,15 @@ test('pre-sorting waits when a slower target-lane leader leaves insufficient bra
 test('a highway car pre-sorts across two adjacent lanes and settles before the stop line',()=>{
   const f = approach('HIGHWAY');
   const c = f.car(f.lanes[0],300,70);
-  f.node.signal.idx = (f.node.signal.group.get(f.turn.fromLane.id)+1)%f.node.signal.phases;
+  f.node.signal.idx = ((f.node.signal.movementGroup?.get(f.turn.id) ?? f.node.signal.group.get(f.turn.fromLane.id))+1)%f.node.signal.phases;
   for (let i=0;i<300;i++) {
     f.index(); f.h.arbitrate(f.a.W.cars);
     f.h.considerLaneChange(c,1/60); c.step(1/60);
   }
   assert.ok(c.track===f.turn.fromLane);
   assert.equal(c.lat,0);
-  assert.equal(c.claim,null);
-  f.node.signal.idx = f.node.signal.group.get(f.turn.fromLane.id);
+  assert.ok(c.claim===null);
+  f.node.signal.idx = (f.node.signal.movementGroup?.get(f.turn.id) ?? f.node.signal.group.get(f.turn.fromLane.id));
   let entered = false;
   for (let i=0;i<300;i++) {
     f.index(); f.h.arbitrate(f.a.W.cars);
