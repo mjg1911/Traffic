@@ -17,7 +17,7 @@ Double-click **Play Arterial.cmd** in this folder to play. You can also open **i
 
 Use **WASD** to pan. Hold **Space** or **Shift** and drag to pan, or scroll to zoom. **F** fits the city, **P** pauses, **Q** cycles road types, **C** switches straight/curve, and **L** toggles lane routing. The view buttons also zoom and fit.
 
-Open **City & zoning** for homes, shops and industry. **2** selects zone painting. Drag to paint, right-drag to erase, and Ctrl + scroll adjusts brush size. The starter city already contains buildings and traffic. The missing road connection along its north side is a useful first experiment.
+Choose **Zones** in the left tool panel for homes, shops and industry. **2** selects zone painting. Drag to paint, right-drag to erase, and Ctrl + scroll adjusts brush size. The starter city already contains buildings and traffic. The missing road connection along its north side is a useful first experiment.
 
 **Dark mode** changes the controls and map together. Your choice is remembered. The simulated time of day affects travel demand, while your selected theme controls the map lighting.
 

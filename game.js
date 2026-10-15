@@ -71,7 +71,7 @@ const CFG = {
   CHANGE_TIME: 0.85,        // seconds of lateral travel
 
   // junctions
-  CONFLICT_R: 14,
+  CONFLICT_R: 10.5,        // truck width + 1px clearance; less than lane spacing
   STOPLINE: 2,
   GREEN_TIME: 8.5, AMBER_TIME: 1.2,
   BOX_CLEAR: 10,
@@ -390,7 +390,8 @@ class GNode {
     this.connMap = new Map();
     this.occ = new Map();            // connectorId → cars claiming it
     this.signal = null;
-    this.control = 'YIELD';          // SIGNAL | STOP | YIELD
+    this.control = 'YIELD';          // SIGNAL | STOP | YIELD | PRIORITY
+    this.priorityEdges = new Set();
     this.r = 14;
     this.isRing = false;
     this.ringId = 0;
@@ -546,9 +547,10 @@ function makeConnector(node, li, lo, turn) {
 function computeConflicts(node) {
   const cs = node.connectors;
   for (const c of cs) c.conflicts = [];
-  const S = 7, R2 = CFG.CONFLICT_R * CFG.CONFLICT_R;
+  const R = CFG.CONFLICT_R;
   const pts = cs.map(c => {
     const a = [];
+    const S = Math.max(8, Math.ceil(c.length / 6));
     for (let i = 0; i <= S; i++) a.push(c.path.pos(c.length * i / S));
     return a;
   });
@@ -566,8 +568,19 @@ function computeConflicts(node) {
         const A = box[i], B = box[j];
         if (A.x1 < B.x0 || B.x1 < A.x0 || A.y1 < B.y0 || B.y1 < A.y0) continue;
         outer:
-        for (const p of pts[i]) for (const q of pts[j]) {
-          if (V.dist2(p, q) < R2) { hit = true; break outer; }
+        // Check whole segments, so a crossing between samples cannot be missed.
+        // Short chords approximate bends while preserving adjacent lane clearance.
+        for (let u = 1; u < pts[i].length; u++) for (let v = 1; v < pts[j].length; v++) {
+          const p = pts[i][u - 1], q = pts[i][u];
+          const r = pts[j][v - 1], s = pts[j][v];
+          if (Math.max(p.x,q.x) + R < Math.min(r.x,s.x) ||
+              Math.max(r.x,s.x) + R < Math.min(p.x,q.x) ||
+              Math.max(p.y,q.y) + R < Math.min(r.y,s.y) ||
+              Math.max(r.y,s.y) + R < Math.min(p.y,q.y)) continue;
+          if (segX(p,q,r,s) || segClosest(p,r,s).d < R || segClosest(q,r,s).d < R ||
+              segClosest(r,p,q).d < R || segClosest(s,p,q).d < R) {
+            hit = true; break outer;
+          }
         }
       }
       if (hit) { a.conflicts.push(b); b.conflicts.push(a); }
@@ -936,7 +949,7 @@ function resyncTrack(c) {
   if (g.indexOf(t) >= 0) return;
   const real = g[Math.min(t.idx, g.length - 1)];
   if (!real) { c.dead = true; return; }
-  c.releaseClaim();
+  if (!c.claimClearing) c.releaseClaim();
   c.s = clamp(c.s * (real.length / t.length), 0, real.length);
   c.track = real;
   c.route[c.ri] = real;
@@ -996,12 +1009,16 @@ class Car {
     this.ri = 0;
     this.goalLane = null;
     this.goalS = 0;
-    this.phase = 'OUT';                 // OUT | VISIT | BACK
+    this.phase = 'OUT';                 // OUT | ENTER | VISIT | BACK
     this.visitT = 0;
+    this.enterT = 0;
+    this.enterFromX = 0;
+    this.enterFromY = 0;
     this.wantIdx = null;
     this.changeCd = Math.random() * CFG.CHANGE_CD;
     this.claim = null;
     this.claimT = 0;
+    this.claimClearing = false;
     this.wait = 0;
     this.dead = false;
     this.needsReroute = false;
@@ -1037,7 +1054,7 @@ class Car {
     const n = this.claim.node;
     const c = (n.occ.get(this.claim.id) || 1) - 1;
     if (c <= 0) n.occ.delete(this.claim.id); else n.occ.set(this.claim.id, c);
-    this.claim = null; this.claimT = 0;
+    this.claim = null; this.claimT = 0; this.claimClearing = false;
   }
   kill() { this.releaseClaim(); this.dead = true; }
 
@@ -1066,7 +1083,8 @@ class Car {
     const s = this.track.kind === 'LANE' ? this.s : 0;
     const r = routeBetween(base, s, tgt.lane, tgt.s, strict);
     if (r) {
-      this.releaseClaim();
+      // Rerouting cannot relinquish a movement we are still driving through.
+      if (this.track.kind !== 'CONN' && !this.claimClearing) this.releaseClaim();
       if (this.track.kind === 'CONN') { this.route = [this.track, ...r]; this.ri = 0; }
       else { this.route = r; this.ri = 0; this.track = r[0]; }
       this.goalLane = tgt.lane; this.goalS = tgt.s;
@@ -1077,12 +1095,25 @@ class Car {
   }
 
   step(dt) {
+    if (this.phase === 'ENTER') {
+      this.ppx = this.px; this.ppy = this.py;
+      this.enterT = Math.max(0, this.enterT - dt);
+      const progress = 1 - this.enterT / 0.4;
+      this.px = lerp(this.enterFromX, this.target.x, progress);
+      this.py = lerp(this.enterFromY, this.target.y, progress);
+      if (this.enterT <= 0) {
+        this.phase = 'VISIT';
+        this.visitT = CFG.VISIT_TIME * (0.6 + Math.random());
+      }
+      return;
+    }
     if (this.phase === 'VISIT') {
       this.visitT -= dt;
       if (this.visitT <= 0) this.depart();
       return;
     }
     if (!this.track) { this.kill(); return; }
+    if (this.claimClearing && this.s >= this.len / 2) this.releaseClaim();
     if (this.needsReroute) this.reroute();
     if (!this.track) return;
 
@@ -1095,6 +1126,9 @@ class Car {
 
     let vDes = Math.min(this.v0, this.track.speedLimit);
     const nt = this.route[this.ri + 1];
+    const hasClearance = nt && this.track === nt.fromLane && this.lat === 0 &&
+      this.claim === nt && nt.node.occ.get(nt.id) > 0 &&
+      nt.node.connectors.includes(nt);
     if (nt && isFinite(nt.speedLimit)) {
       vDes = Math.min(vDes, Math.sqrt(nt.speedLimit ** 2 + 2 * CFG.IDM_B * Math.max(this.toEnd, 0)));
     }
@@ -1104,12 +1138,14 @@ class Car {
     if (lead) a = Math.min(a, idmAccel(this.v, vDes, lead.gap, lead.dv));
 
     // junction stop line — held until the arbiter grants a reservation
-    if (nt && nt.kind === 'CONN' && !this.claim) {
+    if (nt && nt.kind === 'CONN' && !hasClearance) {
       a = Math.min(a, idmAccel(this.v, vDes, this.toEnd - this.len / 2 - CFG.STOPLINE, this.v));
     }
 
     // kerbside stop at the destination
     if (this.ri === this.route.length - 1) {
+      // A lot close to the junction must not park the vehicle's rear in it.
+      if (this.onGoalRoad && this.claimClearing) this.goalS = Math.max(this.goalS, this.len / 2 + 1.5);
       const stopAt = this.onGoalRoad ? Math.min(this.goalS, this.track.length) : this.track.length;
       a = Math.min(a, idmAccel(this.v, vDes, stopAt - this.s + CFG.IDM_S0, this.v));
       if (this.s >= stopAt - 1.5) { this.arrive(); return; }
@@ -1118,11 +1154,17 @@ class Car {
     a = clamp(a, -CFG.IDM_B * 1.7, CFG.IDM_A);
     this.v = Math.max(0, this.v + a * dt);
     this.s += this.v * dt;
+    // Braking alone cannot prevent a fast car overshooting the stop line.
+    if (nt && nt.kind === 'CONN' && !hasClearance) {
+      const stopAt = Math.max(0, this.track.length - this.len / 2 - CFG.STOPLINE);
+      if (this.s > stopAt) { this.s = stopAt; this.v = 0; }
+    }
     this.wait = this.v < 6 ? this.wait + dt : 0;
 
     // stuck at a stop line in the wrong lane: re-plan a route that starts from
     // the lane we are actually in, rather than waiting for a gap forever
-    if (this.wait > 3.5 && nt && nt.kind === 'CONN' && this.track !== nt.fromLane) {
+    if (this.wait > 3.5 && nt && nt.kind === 'CONN' && this.track !== nt.fromLane &&
+        this.lat === 0 && this.toEnd <= this.len / 2 + CFG.STOPLINE + CFG.IDM_S0) {
       this.reroute(true);
       this.wait = 0;
       if (!this.track) return;
@@ -1132,22 +1174,30 @@ class Car {
     if (this.claim) {
       this.claimT += dt;
       // never let a stalled reservation lock a junction forever
-      if (this.claimT > 7 && this.track.kind === 'LANE' && this.v < 3) this.releaseClaim();
+      if (this.claimT > 7 && !this.claimClearing && this.track.kind === 'LANE' && this.v < 3) this.releaseClaim();
     }
 
     let guard = 4;
     while (this.s >= this.track.length && guard-- > 0) {
       if (this.ri >= this.route.length - 1) { this.arrive(); return; }
+      const next = this.route[this.ri + 1];
+      if (next.kind === 'CONN' && (this.claim !== next || this.track !== next.fromLane || this.lat !== 0 ||
+          !next.node.occ.get(next.id) || !next.node.connectors.includes(next))) {
+        this.s = Math.max(0, this.track.length - this.len / 2 - CFG.STOPLINE);
+        this.v = 0;
+        break;
+      }
       const over = this.s - this.track.length;
       const leaving = this.track;
       this.ri++;
       this.track = this.route[this.ri];
       this.s = Math.min(over, this.track.length);
       this.lat = 0;
-      if (leaving.kind === 'CONN') this.releaseClaim();
+      if (leaving.kind === 'CONN') this.claimClearing = !!this.claim;
       this.computeWant();
       if (this.track.kind === 'LANE' && Math.random() < 0.12) this.needsReroute = true;
     }
+    if (this.claimClearing && this.s >= this.len / 2) this.releaseClaim();
   }
 
   arrive() {
@@ -1156,12 +1206,14 @@ class Car {
     const tgt = this.target;
     const good = tgt && this.onGoalRoad;
     if (!good) { this.dead = true; return; }
+    // Release the destination lane immediately, then animate into the building.
     const p = this.track.pos(clamp(this.goalS, 0, this.track.length));
-    this.px = p.x; this.py = p.y;
+    this.enterFromX = this.px = p.x;
+    this.enterFromY = this.py = p.y;
+    this.enterT = 0.4;
     CITY.tripDone(this, W.time - this.tripStart);
     if (this.phase === 'OUT') {
-      this.phase = 'VISIT';
-      this.visitT = CFG.VISIT_TIME * (0.6 + Math.random());
+      this.phase = 'ENTER';
       this.track = null;
     } else {
       this.dead = true;
@@ -1171,8 +1223,18 @@ class Car {
   depart() {
     const o = this.origin;
     if (!o.lane || !this.dest.lane) { this.dead = true; return; }
-    const r = routeBetween(this.dest.lane, this.dest.s, o.lane, o.s);
+    const lane = this.dest.lane;
+    const s = this.dest.s;
+    // Stay inside until the curb slot is clear; inserting into an occupied lane
+    // makes the returning car wait on the road and can block following traffic.
+    const blocked = W.cars.some(c => c !== this && !c.dead && c.track === lane &&
+      Math.abs(c.s - s) < (this.len + c.len) / 2 + CFG.IDM_S0);
+    if (blocked) return;
+    const r = routeBetween(lane, s, o.lane, o.s);
     if (!r) { this.dead = true; return; }
+    const p = lane.pos(s);
+    this.px = this.ppx = p.x;
+    this.py = this.ppy = p.y;
     this.phase = 'BACK';
     this.tripStart = W.time;
     this.setRoute(r, o.lane, o.s);
@@ -1180,6 +1242,7 @@ class Car {
   }
 
   pose() {
+    if (this.phase === 'ENTER') return;
     this.ppx = this.px; this.ppy = this.py; this.pang = this.ang;
     if (!this.track) return;
     const p = this.track.pos(this.s);
@@ -1202,6 +1265,7 @@ function laneAccelFor(veh, lane, gap, dv) {
 
 function considerLaneChange(car, dt) {
   car.changeCd -= dt;
+  if (car.claimClearing) return;
   if (!car.track || car.track.kind !== 'LANE') return;
   const lane = car.track;
   const sibs = lane.siblings;
@@ -1209,8 +1273,17 @@ function considerLaneChange(car, dt) {
 
   const want = car.wantIdx;
   const mandatory = want !== null && want !== lane.idx;
+  const next = car.route[car.ri + 1];
+  // Reserve enough approach distance for every adjacent merge and braking.
+  // Once sorted, stay in the route's lane instead of passing its queue and
+  // trying to merge back at the lights.
+  const speed = Math.max(car.v, Math.min(car.v0, lane.speedLimit));
+  const sortDistance = Math.max(300, speed * (CFG.CHANGE_TIME + CFG.CHANGE_CD) *
+    (sibs.length - 1) + speed * speed / (2 * CFG.IDM_B));
+  const preSorting = next && next.kind === 'CONN' && car.toEnd <= sortDistance;
+  if (preSorting && !mandatory) return;
   const urgency = mandatory ? clamp(1 - car.toEnd / 300, 0, 1) : 0;
-  if (car.changeCd > 0 && !(mandatory && urgency > 0.45)) return;
+  if (car.changeCd > 0 && !(mandatory && (preSorting || urgency > 0.45))) return;
   if (Math.abs(car.lat) > 1.5) return;
 
   const dirToward = mandatory ? Math.sign(want - lane.idx) : 0;
@@ -1221,8 +1294,11 @@ function considerLaneChange(car, dt) {
   let best = null, bestScore = CFG.MOBIL_TH;
   for (const T of cands) {
     const moving = Math.sign(T.idx - lane.idx);
-    if (mandatory && urgency > 0.3 && moving !== dirToward) continue;
+    if (mandatory && (preSorting || urgency > 0.3) && moving !== dirToward) continue;
     const sc = mobilScore(car, lane, T, mandatory && moving === dirToward, urgency);
+    // A necessary merge may join slower traffic. Gap and follower safety in
+    // mobilScore still apply, but acceleration gain must not postpone it.
+    if (preSorting && mandatory && sc !== null) { best = T; break; }
     if (sc !== null && sc > bestScore) { bestScore = sc; best = T; }
   }
   if (best) executeChange(car, best);
@@ -1239,6 +1315,13 @@ function mobilScore(car, lane, T, toward, urgency) {
   const gapF = newFoll ? gapBetween(newFoll, probe) : Infinity;
   const room = toward ? 0.5 : 2.5;
   if (gapL < room || gapF < room) return null;
+  // A mandatory merge can accept slower traffic, but must leave enough
+  // distance to brake if that leader also stops. Incentive is not safety.
+  if (toward && newLead) {
+    const brakingRoom = CFG.IDM_S0 + Math.max(0,
+      (car.v * car.v - newLead.v * newLead.v) / (2 * CFG.IDM_B));
+    if (gapL < brakingRoom) return null;
+  }
 
   const aNew = laneAccelFor(car, T, gapL, newLead ? car.v - newLead.v : 0);
   if (newFoll) {
@@ -1321,26 +1404,50 @@ function signalAllows(node, conn) {
 
 function arbitrate(cars) {
   const byNode = new Map();
+  // Road edits replace connector geometry. Let cars finish the retired paths
+  // before admitting traffic against the new, incompatible conflict map.
+  const draining = new Set();
+  for (const c of cars) {
+    if (c.dead) continue;
+    const occupied = c.claim || (c.track && c.track.kind === 'CONN' ? c.track : null);
+    if (c.claim && !c.claimClearing && c.track && c.track.kind === 'LANE' &&
+        !occupied.node.connectors.includes(occupied)) {
+      c.releaseClaim();
+      c.needsReroute = true;
+      continue;
+    }
+    if (occupied && !occupied.node.connectors.includes(occupied)) draining.add(occupied.node);
+    // A conversion can replace the node itself. Pause grants briefly while
+    // the old crossing clears, since its new footprint spans several nodes.
+    if (occupied && !NET.nodes.includes(occupied.node)) return;
+  }
   for (const c of cars) {
     if (c.dead || c.phase === 'VISIT' || !c.track || c.claim) continue;
     const nt = c.route[c.ri + 1];
     if (!nt || nt.kind !== 'CONN') continue;
-    if (c.track !== nt.fromLane) continue;          // must be in the correct lane
+    if (!nt.node.connectors.includes(nt)) { c.needsReroute = true; continue; }
+    if (c.track !== nt.fromLane || c.lat !== 0) continue; // fully settled in the correct lane
     const dist = c.toEnd;
-    if (dist > 130) continue;
+    const stoppingRange = Math.max(
+      CFG.STOPLINE + c.len + CFG.IDM_S0,
+      (c.v * c.v) / (2 * CFG.IDM_B) + c.len / 2 + CFG.STOPLINE + CFG.IDM_S0
+    );
+    if (dist > stoppingRange || c.track.leaderAfter(c.s, c)) continue;
     let list = byNode.get(nt.node);
     if (!list) byNode.set(nt.node, list = []);
     list.push({ car: c, conn: nt, dist });
   }
 
   for (const [node, reqs] of byNode) {
+    if (draining.has(node)) continue;
     reqs.sort((a, b) => (b.conn.priority - a.conn.priority) ||
                         (b.car.wait - a.car.wait) || (a.dist - b.dist));
     const signalled = node.control === 'SIGNAL' && node.signal && node.signal.phases > 1;
     for (const r of reqs) {
       const { car, conn } = r;
       if (signalled && !signalAllows(node, conn)) continue;
-      if (node.control === 'STOP' && !signalled && car.v > CFG.STOP_V && r.dist < 34) continue;
+      if (node.control === 'STOP' && !signalled &&
+          (car.v > CFG.STOP_V || r.dist > CFG.STOPLINE + car.len + CFG.IDM_S0)) continue;
 
       let blocked = false;
       for (const o of conn.conflicts) {
@@ -1348,7 +1455,11 @@ function arbitrate(cars) {
         if (!signalled && o.priority >= conn.priority) {
           const src = o.fromLane.vehicles;
           const near = src.length ? src[src.length - 1] : null;
-          if (near && near.v > 3 && (o.fromLane.length - near.s) < CFG.YIELD_LOOK) { blocked = true; break; }
+          // A lane can serve several turns. Yield only to the turn this car
+          // will actually take, rather than every hypothetical turn from it.
+          if (near && !near.dead && near.track === o.fromLane &&
+              near.route[near.ri + 1] === o && near.v > 3 &&
+              (o.fromLane.length - near.s) < CFG.YIELD_LOOK) { blocked = true; break; }
         }
       }
       if (blocked) continue;
@@ -1851,6 +1962,15 @@ function edgeAt(p, extra) {
   return best ? { edge: best, s: bs, d: bd } : null;
 }
 
+function priorityArmAt(p) {
+  const hit = edgeAt(p, 4);
+  if (!hit || hit.edge.type === 'RING') return null;
+  const node = [hit.edge.n1, hit.edge.n2]
+    .filter(n => !n.isRing && n.degree >= 3 && V.dist(n.pos, p) <= n.r + hit.edge.halfWidth + 14)
+    .sort((a, b) => V.dist2(a.pos, p) - V.dist2(b.pos, p))[0];
+  return node ? { node, edge: hit.edge } : null;
+}
+
 function evaluateBuild(aPos, bPos, type) {
   const len = V.dist(aPos, bPos);
   const spec = ROADS[type];
@@ -2238,6 +2358,13 @@ function toast(msg) {
 }
 function hideTip() { const t = $('tip'); if (t) t.style.opacity = '0'; }
 
+function toolCategory(t) {
+  if (t === 'ZONE') return 'zones';
+  if (t === 'JUNCTION' || t === 'ROUNDABOUT') return 'junctions';
+  if (t === 'BULLDOZE') return 'city';
+  return 'roads';
+}
+
 function setTool(t) {
   cancelDrawing();
   W.tool = t;
@@ -2263,13 +2390,27 @@ function syncUI() {
   for (const el of document.querySelectorAll('[data-tool]')) el.classList.toggle('on', el.dataset.tool === W.tool);
   for (const el of document.querySelectorAll('[data-road]')) el.classList.toggle('on', el.dataset.road === W.roadType);
   for (const el of document.querySelectorAll('[data-zone]')) el.classList.toggle('on', +el.dataset.zone === W.zoneType);
+  const category = toolCategory(W.tool);
+  for (const el of document.querySelectorAll('[data-category]')) {
+    const active = el.dataset.category === category;
+    el.classList.toggle('on', active);
+    el.setAttribute('aria-pressed', String(active));
+  }
+  for (const el of document.querySelectorAll('[data-category-panel]')) {
+    el.hidden = el.dataset.categoryPanel !== category;
+  }
   $('btn-pause').textContent = W.running ? 'Pause' : 'Resume';
   $('btn-speed').textContent = `Speed ${W.speed}×`;
   $('btn-debug').classList.toggle('on', W.debug);
   $('btn-pause').setAttribute('aria-label',W.running?'Pause simulation':'Resume simulation');
   $('btn-grid').setAttribute('aria-pressed',String(EDIT.grid));
   for(const el of document.querySelectorAll('[data-draw]')) {el.classList.toggle('on',el.dataset.draw===EDIT.drawMode);el.setAttribute('aria-pressed',String(el.dataset.draw===EDIT.drawMode));}
-  for(const el of document.querySelectorAll('[data-tool], [data-road]')) el.setAttribute('aria-pressed',String(el.dataset.tool?el.dataset.tool===W.tool:el.dataset.road===W.roadType));
+  for (const el of document.querySelectorAll('[data-tool], [data-road]')) {
+    const selected = el.dataset.category
+      ? el.dataset.category === category
+      : el.dataset.tool ? el.dataset.tool === W.tool : el.dataset.road === W.roadType;
+    el.setAttribute('aria-pressed', String(selected));
+  }
 }
 
 /* ─────────────────────────  scene setup  ───────────────────────── */
@@ -2610,21 +2751,11 @@ function drawBuildings(dark, detail) {
     }
     ctx.restore();
   }
-  // parked visitors
-  for (const c of W.cars) {
-    if (c.phase !== 'VISIT') continue;
-    ctx.save();
-    ctx.translate(c.px, c.py); ctx.rotate(c.ang);
-    ctx.globalAlpha = 0.8; ctx.fillStyle = c.color;
-    roundRect(-c.len / 2, -c.wide / 2, c.len, c.wide, 2.4); ctx.fill();
-    ctx.restore();
-  }
-  ctx.globalAlpha = 1;
 }
 
 function drawCars(alpha, detail) {
   for (const c of W.cars) {
-    if (!c.track || c.phase === 'VISIT') continue;
+    if (c.phase === 'VISIT' || (!c.track && c.phase !== 'ENTER')) continue;
     const x = lerp(c.ppx, c.px, alpha), y = lerp(c.ppy, c.py, alpha);
     const a = c.pang + angDiff(c.pang, c.ang) * alpha;
     ctx.save();
@@ -2947,7 +3078,7 @@ const BUILDING_FIELDS=['x','y','type','level','cell','service','starve','since',
 function captureCity() {
   return {
     version:CitySave.VERSION,seed:SEED,time:W.time,
-    nodes:NET.nodes.map(n=>({id:n.id,x:n.x,y:n.y,control:n.control,isRing:n.isRing,ringId:n.ringId})),
+    nodes:NET.nodes.map(n=>({id:n.id,x:n.x,y:n.y,control:n.control,priorityEdges:[...n.priorityEdges],isRing:n.isRing,ringId:n.ringId})),
     edges:NET.edges.map(e=>({id:e.id,n1:e.n1.id,n2:e.n2.id,type:e.type,bend:e.bend})),
     rings:[...W.rings].map(([id,r])=>({id,cx:r.cx,cy:r.cy,R:r.R,hw:r.hw,nodes:r.nodes.map(n=>n.id)})),
     river:{centre:W.river.centre.map(p=>({x:p.x,y:p.y})),poly:W.river.poly.map(p=>({x:p.x,y:p.y}))},
@@ -2964,7 +3095,7 @@ function restoreCity(raw) {
   let candidate;
   try {
     _id=Math.max(0,...data.nodes.map(n=>n.id),...data.edges.map(e=>e.id));
-    const nodes=data.nodes.map(n=>{const node=new GNode(n.x,n.y);for(const k of ['id','control','isRing','ringId']) node[k]=n[k];return node;});
+    const nodes=data.nodes.map(n=>{const node=new GNode(n.x,n.y);for(const k of ['id','control','isRing','ringId']) node[k]=n[k];node.priorityEdges=new Set(n.priorityEdges);return node;});
     const byId=new Map(nodes.map(n=>[n.id,n]));
     const edges=data.edges.map(e=>{
       const edge=new Edge(byId.get(e.n1),byId.get(e.n2),e.type,e.bend);edge.id=e.id;

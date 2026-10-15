@@ -26,6 +26,21 @@ test('crossing a road creates a four-way junction',()=>{
   assert.equal(result.ok,true);
   assert.ok(a.NET.nodes.some(n=>Math.abs(n.x-400)<.1&&Math.abs(n.y-200)<.1&&n.degree===4));
 });
+test('parallel through lanes on an avenue do not conflict at a signal',()=>{
+  const {api:a}=loadGame();
+  const node=a.NET.nodes.find(n=>n.degree===4&&n.connectors.some(c=>c.fromLane.edge.type==='AVENUE'));
+  assert.ok(node,'starter city has a four-way avenue junction');
+  const through=node.connectors.filter(c=>c.fromLane.edge.type==='AVENUE'&&c.toLane.edge.type==='AVENUE'&&Math.abs(c.turn)<.15);
+  let pair=null;
+  for(let i=0;i<through.length&&!pair;i++) for(let j=i+1;j<through.length;j++){
+    const first=through[i],second=through[j];
+    if(first.fromLane.edge===second.fromLane.edge&&first.fromLane.forward===second.fromLane.forward&&
+       first.toLane.edge===second.toLane.edge&&first.toLane.forward===second.toLane.forward&&
+       first.fromLane!==second.fromLane&&first.toLane!==second.toLane){pair=[first,second];break;}
+  }
+  assert.ok(pair,'junction has a pair of parallel lane-to-lane through movements');
+  assert.equal(pair[0].conflicts.includes(pair[1]),false);
+});
 test('curve construction retains chosen bend',()=>{
   const {api:a}=loadGame();
   assert.equal(a.buildRoad({x:200,y:200},{x:600,y:200},75).ok,true);

@@ -6,7 +6,8 @@
   'use strict';
 
   const LEGACY_VERSION = 1;
-  const VERSION = 2;
+  const PREVIOUS_VERSION = 2;
+  const VERSION = 3;
   const LEGACY_COLS = Math.ceil(3000 / 34), LEGACY_ROWS = Math.ceil(2000 / 34);
   const CURRENT_COLS = Math.ceil(4800 / 34), CURRENT_ROWS = Math.ceil(3200 / 34);
   const LEGACY_ZONE_COUNT = LEGACY_COLS * LEGACY_ROWS;
@@ -70,7 +71,8 @@
 
   function validate(data) {
     object(data, 'save');
-    const zoneCount = data.version === LEGACY_VERSION ? LEGACY_ZONE_COUNT : data.version === VERSION ? ZONE_COUNT : 0;
+    const zoneCount = data.version === LEGACY_VERSION ? LEGACY_ZONE_COUNT :
+      data.version === PREVIOUS_VERSION || data.version === VERSION ? ZONE_COUNT : 0;
     if (!zoneCount) invalid('version', 'is unsupported');
     integer(data.seed, 'seed', 0, 0xFFFFFFFF);
     finite(data.time, 'time', 0, 1e9);
@@ -84,7 +86,19 @@
       uniqueId(node.id, path + '.id', nodeIds);
       finite(node.x, path + '.x', -10000, 10000);
       finite(node.y, path + '.y', -10000, 10000);
-      if (!['YIELD', 'STOP', 'SIGNAL'].includes(node.control)) invalid(path + '.control', 'must be YIELD, STOP, or SIGNAL');
+      const controls = data.version === VERSION ? ['YIELD', 'STOP', 'SIGNAL', 'PRIORITY'] : ['YIELD', 'STOP', 'SIGNAL'];
+      if (!controls.includes(node.control)) invalid(path + '.control', 'is not supported by this save version');
+      if (data.version === VERSION) {
+        const priorityEdges = array(node.priorityEdges, path + '.priorityEdges', EDGE_LIMIT);
+        const selected = new Set();
+        priorityEdges.forEach((edgeId, edgeIndex) => {
+          integer(edgeId, path + '.priorityEdges[' + edgeIndex + ']', 1, MAX_ID);
+          if (selected.has(edgeId)) invalid(path + '.priorityEdges', 'must not contain duplicate edge IDs');
+          selected.add(edgeId);
+        });
+        if (node.control === 'PRIORITY' && !selected.size) invalid(path + '.priorityEdges', 'must select an approach for a priority junction');
+        if (node.control !== 'PRIORITY' && selected.size) invalid(path + '.priorityEdges', 'must be empty unless the node uses priority control');
+      }
       if (typeof node.isRing !== 'boolean') invalid(path + '.isRing', 'must be a boolean');
       integer(node.ringId, path + '.ringId', 0, MAX_ID);
       nodeById.set(node.id, node);
@@ -128,11 +142,13 @@
 
     const edges = array(data.edges, 'edges', EDGE_LIMIT);
     const edgeIds = new Set();
+    const edgeById = new Map();
     const connections = new Set();
     edges.forEach((raw, index) => {
       const path = 'edges[' + index + ']';
       const edge = object(raw, path);
       uniqueId(edge.id, path + '.id', edgeIds);
+      edgeById.set(edge.id, edge);
       integer(edge.n1, path + '.n1', 1, MAX_ID);
       integer(edge.n2, path + '.n2', 1, MAX_ID);
       const n1 = nodeById.get(edge.n1);
@@ -159,6 +175,18 @@
         ring.next.set(n1.id, n2.id);
       }
     });
+
+    if (data.version === VERSION) {
+      nodeById.forEach((node, nodeId) => {
+        for (const edgeId of node.priorityEdges) {
+          const edge = edgeById.get(edgeId);
+          if (!edge) invalid('nodes', 'contains a priority approach that references an unknown edge ID');
+          if (edge.type === 'RING' || (edge.n1 !== nodeId && edge.n2 !== nodeId)) {
+            invalid('nodes', 'contains a priority approach that is not a non-ring incident road');
+          }
+        }
+      });
+    }
 
     ringById.forEach((ring, ringId) => {
       const path = 'rings (ID ' + ringId + ')';
@@ -231,9 +259,17 @@
   function migrate(data) {
     validate(data);
     if (data.version === VERSION) return data;
+    if (data.version === PREVIOUS_VERSION) {
+      return validate({
+        ...data,
+        version: VERSION,
+        nodes: data.nodes.map(node => ({ ...node, priorityEdges: [] })),
+      });
+    }
     const migrated = {
       ...data,
       version: VERSION,
+      nodes: data.nodes.map(node => ({ ...node, priorityEdges: [] })),
       zones: new Array(ZONE_COUNT).fill(0),
       buildings: data.buildings.map(building => ({
         ...building,
