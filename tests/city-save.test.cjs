@@ -49,6 +49,58 @@ function validCity() {
   };
 }
 
+const CURRENT_ZONE_COUNT = Math.ceil(4800 / 34) * Math.ceil(3200 / 34);
+
+function validV2City() {
+  const data = structuredClone(validCity());
+  const zones = Array(CURRENT_ZONE_COUNT).fill(0);
+  zones[0] = 1; zones[1] = 2; zones[2] = 3;
+  data.version = 2;
+  data.zones = zones;
+  for (const node of data.nodes) node.priorityEdges = [];
+  return data;
+}
+
+function validV3City() {
+  const data = validV2City();
+  data.version = 3;
+  return data;
+}
+
+function validV4City() {
+  const data = validV3City();
+  data.version = 4;
+  for (const node of data.nodes) {
+    node.preSorting = {};
+    node.laneRules = [];
+  }
+  return data;
+}
+
+function fixedBuilding({ x, y, type, sizeKey, width, depth, parking, angle = 0 }) {
+  return {
+    x, y, type, level: 1, service: 0.5, starve: 0, since: 0, trips: 0,
+    outTimer: 0, born: 1, seed: 0.25, sizeKey, width, depth, parking, angle,
+    entrance: {
+      x: x + Math.sin(angle) * depth / 2,
+      y: y - Math.cos(angle) * depth / 2,
+    },
+    access: null,
+  };
+}
+
+function validV5City() {
+  const data = validV4City();
+  data.version = 5;
+  delete data.zones;
+  data.buildings = [
+    fixedBuilding({ x: 10, y: 20, type: 'R', sizeKey: 'S', width: 60, depth: 45, parking: 1 }),
+    fixedBuilding({ x: 110, y: 120, type: 'C', sizeKey: 'M', width: 90, depth: 60, parking: 4, angle: 0.7 }),
+    fixedBuilding({ x: 210, y: 220, type: 'I', sizeKey: 'L', width: 120, depth: 120, parking: 16, angle: -1.2 }),
+  ];
+  return data;
+}
+
 function assertInvalid(mutator, pattern = /invalid city save/i) {
   const data = structuredClone(validCity());
   mutator(data);
@@ -57,7 +109,7 @@ function assertInvalid(mutator, pattern = /invalid city save/i) {
 
 test('valid version 1 city with roads, ring, river, zones, buildings and trips passes unchanged', () => {
   const data = validCity();
-  assert.equal(CitySave.VERSION, 4);
+  assert.equal(CitySave.VERSION, 5);
   assert.equal(CitySave.ZONE_COUNT, Math.ceil(4800 / 34) * Math.ceil(3200 / 34));
   assert.equal(CitySave.validate(data), data);
 });
@@ -67,8 +119,98 @@ test('CitySave is available as a browser global as well as CommonJS', () => {
   const browser = {};
   vm.runInNewContext(source, browser);
   assert.equal(typeof browser.CitySave?.validate, 'function');
-  assert.equal(browser.CitySave.VERSION, 4);
+  assert.equal(browser.CitySave.VERSION, 5);
   assert.equal(browser.CitySave.validate(validCity()).version, 1);
+});
+
+test('keeps version 4 lane rule and pre-sorting validation strict', () => {
+  const valid = validV4City();
+  assert.equal(CitySave.validate(valid), valid);
+  const missingZones = structuredClone(valid);
+  delete missingZones.zones;
+  assert.throws(() => CitySave.validate(missingZones), /zones/i);
+  const badLaneRules = structuredClone(valid);
+  badLaneRules.nodes[0].laneRules = null;
+  assert.throws(() => CitySave.validate(badLaneRules), /laneRules/i);
+  const badPreSorting = structuredClone(valid);
+  badPreSorting.nodes[0].preSorting = { '999': { left: 50 } };
+  assert.throws(() => CitySave.validate(badPreSorting), /preSorting/i);
+});
+
+test('validates version 5 direct preset buildings without requiring zones or cells', () => {
+  const data = validV5City();
+  data.zones = 'ignored extra data';
+  data.buildings[0].cell = 7;
+  data.buildings[1].cell = 7;
+  assert.equal(CitySave.validate(data), data);
+});
+
+test('rejects corrupt version 5 building size, dimensions, angle, parking and entrance', () => {
+  const corruptions = [
+    building => { building.sizeKey = 'XL'; },
+    building => { building.width = Infinity; },
+    building => { building.width = 61; },
+    building => { building.depth = -1; },
+    building => { building.angle = Math.PI * 2 + 0.01; },
+    building => { building.parking = 2; },
+    building => { building.parking = 1.5; },
+    building => { delete building.entrance; },
+    building => { building.entrance.x = NaN; },
+    building => { building.entrance.y += 1; },
+  ];
+  for (const corrupt of corruptions) {
+    const data = validV5City();
+    corrupt(data.buildings[0]);
+    assert.throws(() => CitySave.validate(data), /invalid city save/i);
+  }
+});
+
+test('validates v5 access against an existing non-ring road and a signed side', () => {
+  const data = validV5City();
+  data.buildings[0].access = { edgeId: 1, side: -1 };
+  assert.equal(CitySave.validate(data), data);
+  const unknown = validV5City();
+  unknown.buildings[0].access = { edgeId: 999, side: 1 };
+  assert.throws(() => CitySave.validate(unknown), /access/i);
+  const ring = validV5City();
+  ring.buildings[0].access = { edgeId: 2, side: 1 };
+  assert.throws(() => CitySave.validate(ring), /access/i);
+  const unsigned = validV5City();
+  unsigned.buildings[0].access = { edgeId: 1, side: 0 };
+  assert.throws(() => CitySave.validate(unsigned), /access/i);
+});
+
+test('migrates versions 1 through 4 to fixed legacy buildings while preserving counters and metadata', () => {
+  for (const oldData of [validCity(), validV2City(), validV3City(), validV4City()]) {
+    const migrated = CitySave.migrate(oldData);
+    assert.equal(migrated.version, 5);
+    assert.equal(migrated.zones, undefined);
+    assert.equal(migrated.nodes.every(node => Array.isArray(node.priorityEdges) && Array.isArray(node.laneRules)), true);
+    assert.equal(migrated.buildings.length, 3);
+    for (let i = 0; i < migrated.buildings.length; i++) {
+      const building = migrated.buildings[i];
+      const original = oldData.buildings[i];
+      const base = ({ R: 17, C: 21, I: 26 })[building.type] + building.level * 4;
+      const wobble = 0.82 + 0.36 * building.seed;
+      assert.equal(building.sizeKey, 'LEGACY');
+      assert.equal(building.width, base * wobble);
+      assert.equal(building.depth, base * (building.type === 'I' ? 0.86 : 0.95) / wobble);
+      assert.equal(building.angle, 0);
+      assert.equal(building.parking, 0);
+      assert.deepEqual(building.entrance, { x: original.x, y: original.y });
+      assert.equal(building.access, null);
+      assert.equal(building.legacyUnattached, true);
+      for (const key of ['service', 'starve', 'since', 'trips', 'outTimer', 'born', 'seed', 'level']) {
+        assert.equal(building[key], original[key], key);
+      }
+    }
+  }
+});
+
+test('rejects malformed old version 4 saves before migration', () => {
+  const data = validV4City();
+  data.nodes[0].laneRules = [{ fromEdgeId: 999, fromForward: true, fromLane: 0, to: [{ edgeId: 1, forward: true, lane: 0 }] }];
+  assert.throws(() => CitySave.migrate(data), /laneRules|unknown|incident/i);
 });
 
 test('rejects unsupported versions and missing required top-level fields', () => {

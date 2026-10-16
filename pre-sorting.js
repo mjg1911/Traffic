@@ -156,18 +156,23 @@ function togglePreSortingArm(node, edge, count = W.preSortingCount) {
   }
   const record = preSortingRecord(node, edge, count);
   if (!record || !Object.keys(record).length) return false;
-  node.preSorting[edge.id] = record;
+  const proposed={...node.preSorting,[edge.id]:record};
+  if(!canEditRoadGeometry({node,preSorting:proposed}))return false;
+  node.preSorting=proposed;
   refreshPreSorting(node);
   return 'added';
 }
 
 function addPreSorting(node, count = W.preSortingCount) {
   if (!node || node.isRing || node.degree < 3) return false;
+  const proposed={...node.preSorting};
   for (const edge of node.edges) {
     const record = preSortingRecord(node, edge, count, node.preSorting[edge.id] || {});
-    if (record && Object.keys(record).length) node.preSorting[edge.id] = record;
-    else delete node.preSorting[edge.id];
+    if (record && Object.keys(record).length) proposed[edge.id] = record;
+    else delete proposed[edge.id];
   }
+  if(!canEditRoadGeometry({node,preSorting:proposed}))return false;
+  node.preSorting=proposed;
   refreshPreSorting(node);
   return Object.keys(node.preSorting).length > 0;
 }
@@ -181,7 +186,9 @@ function setPreSortingCount(count) {
 function resizePreSorting(node, edge, side, length) {
   const record = node && node.preSorting[edge.id];
   if (!record || !record[side] || !Number.isFinite(length)) return false;
-  record[side] = clamp(length, 45, pocketLimit(edge, node));
+  const proposed={...node.preSorting,[edge.id]:{...record,[side]:clamp(length,45,pocketLimit(edge,node))}};
+  if(!canEditRoadGeometry({node,preSorting:proposed}))return false;
+  node.preSorting=proposed;
   refreshPreSorting(node); return true;
 }
 
