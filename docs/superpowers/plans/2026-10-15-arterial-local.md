@@ -12,7 +12,7 @@
 
 - Store the playable game and all required assets in `E:\Traffic game`.
 - Avoid external runtime dependencies, remotely loaded fonts and remotely loaded assets so offline play remains reliable.
-- Preserve `arterial-original.html` as the unmodified reference source and credit its author in the playable version and instructions.
+- Preserve `arterial-original.html` as the unmodified archival reference source.
 - All delegated work uses gpt-6-luna with xhigh reasoning; never substitute.
 - Work directly in this new project folder; there is no Git repository to isolate or commit.
 
@@ -37,7 +37,7 @@ Consumes Task 1 geometry. Keep upstream original unchanged. Extract its script, 
 - [x] Implement a separate Bend tool. Use Straight mode for drag/release placement. Use Curve mode for endpoint drag followed by a second click to set curvature. Compute the control point from `midpoint + normal * bend * 2`, matching `Edge.build()`.
 - [x] Resolve preview and committed endpoints through the same geometry helper. Store the proposed edge attachment so locked roads cannot drift to a different axis at commit. Connect crossings by splitting existing and new edges where they meet; disallow intersections too close to existing junctions when splitting cannot be safe.
 - [x] Add keyboard G for grid, C for straight/curve, B for bend, Escape to cancel. Ignore shortcuts inside editable controls. Display the 50-unit grid only while locked, thinning lines at distant zoom without changing snapping.
-- [x] Replace the sidebar with a compact top bar, left road panel, traffic summary, bottom simulation controls, and expandable city/zoning controls. Include theme toggle, legend, shortcuts, source attribution, and accessible labels.
+- [x] Replace the sidebar with a compact top bar, left road panel, traffic summary, bottom simulation controls, and expandable city/zoning controls. Include theme toggle, legend, shortcuts, and accessible labels.
 - [x] Render light cream terrain, pale roads, olive/teal/ochre buildings, blue water and small colourful cars. Dark mode uses slate terrain with readable road/lane contrast. Disable automatic map dimming; theme is independent of simulated clock.
 - [x] Expand the starter network and zone it; develop and warm it using bounded simulation steps to begin with buildings and moving traffic. Preserve New city as a fresh starter map.
 - [x] Launcher content: `@echo off` followed by `start "" "%~dp0index.html"`. Document that no installation is needed.

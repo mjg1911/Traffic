@@ -34,13 +34,11 @@ Small lots are **4 × 3 tiles** with **1 parking space**, Medium **6 × 4** with
 - Browser-local storage belongs to the browser and file location. Clearing browsing data, moving this folder or using another browser can make those saves unavailable. Use Export for lasting backups.
 - Roads, curves, junction controls, priority approaches, roundabouts, fixed building lots and parking entrances, time, camera and drawing settings are saved. Older zoning saves remain importable: existing buildings keep their old footprint and capacity, while empty painted zones are discarded. Active vehicles start fresh trips after loading; exact in-flight journeys and signal countdowns are not saved.
 
-## Credits and local adaptation
+## About the game
 
-Original simulation: **Anthony Ellis**, [Arterial](https://anthonyellis.dev/projects/arterial/), [source](https://github.com/AnthonyEllisDev/portfolio/blob/main/demos/arterial.html).
+Arterial is a top-down traffic simulation with road and building tools, traffic planning, themes and city persistence. It draws visual inspiration from the [Trafficity gameplay trailer](https://www.youtube.com/watch?v=fUkBn6H-d-A). No Trafficity artwork or code is included. Elevated roads and grade-separated interchanges are outside this version.
 
-`arterial-original.html` is the unmodified downloaded reference. This local adaptation retains the original road graph and car-following foundations, extends traffic planning and movement, and adds road tools, presentation, themes and persistence. Visual inspiration: the [Trafficity gameplay trailer](https://www.youtube.com/watch?v=fUkBn6H-d-A). No Trafficity artwork or code is included. This is a top-down simulation; elevated roads and grade-separated interchanges are outside this version.
-
-The original source was supplied for personal local adaptation. Check the upstream project's license/permissions before redistributing an adapted version.
+`arterial-original.html` is an archived reference file and is not loaded by the playable game. Check its upstream license and permissions before redistributing any files derived from it.
 
 ## Development checks
 

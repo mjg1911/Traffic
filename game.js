@@ -1,5 +1,4 @@
 "use strict";
-// Local adaptation of Arterial by Anthony Ellis. Original: arterial-original.html.
 const EDIT = {grid: false, drawMode: 'straight'};
 const SIDEBAR_TEXT_SIZE_KEY = 'arterial-sidebar-text-size';
 let sidebarTextLarge = false;

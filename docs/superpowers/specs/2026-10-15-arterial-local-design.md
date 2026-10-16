@@ -1,12 +1,12 @@
 # Arterial local traffic game
 
-Approved direction: adapt Anthony Ellis's Arterial simulation for offline play on Windows, with Trafficity-inspired visuals and road editing as the primary interaction.
+Approved direction: build an offline traffic city-management game for Windows, with Trafficity-inspired visuals and road editing as the primary interaction.
 
 ## Local play
 
 - Store the playable game and all required assets in `E:\Traffic game`.
 - Provide a double-click Windows launcher that opens the game in the default browser without requiring an installation or Internet connection.
-- Preserve `arterial-original.html` as the unmodified reference source and credit its author in the playable version and instructions.
+- Preserve `arterial-original.html` as an unmodified archival reference source.
 
 ## Road editing
 
@@ -44,7 +44,7 @@ Approved direction: adapt Anthony Ellis's Arterial simulation for offline play o
 
 - Keep simulation changes targeted. Separate new editing geometry, persistence and theme responsibilities where useful without rewriting the working engine.
 - Avoid external runtime dependencies, remotely loaded fonts and remotely loaded assets so offline play remains reliable.
-- Preserve original source attribution; inspect the upstream repository's license before distributing any adapted source beyond this local project.
+- Inspect the upstream repository's license before distributing any source files derived from the archived reference.
 
 ## Verification
 
