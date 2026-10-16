@@ -11,7 +11,7 @@ module.exports = function loadGame(options = {}) {
   const sandbox={console,document,location:{search:'?seed=42'},performance:{now:()=>0},requestAnimationFrame(){},setInterval(){},setTimeout(){},clearTimeout(){},addEventListener:(name,fn)=>{events['window:'+name]=fn;},devicePixelRatio:1,localStorage:{getItem:k=>store.get(k)||null,setItem:(k,v)=>store.set(k,v)},Blob,URL:{createObjectURL:()=>'',revokeObjectURL(){}},confirm:()=>true};
   sandbox.window=sandbox;
   vm.createContext(sandbox);
-  for (const file of ['road-editor.js','city-save.js','pre-sorting.js','traffic-diagnostics.js','game.js']) {
+  for (const file of ['building-placement.js','road-editor.js','city-save.js','pre-sorting.js','traffic-diagnostics.js','game.js']) {
     if (!fs.existsSync(file)) continue;
     let source=file === 'game.js' && options.gameSource ? options.gameSource : fs.readFileSync(file,'utf8');
     // Focused fixtures author their own network; omit only starter-city boot,

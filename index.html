@@ -4,12 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Arterial — Traffic workshop</title>
-  <link rel="stylesheet" href="styles.css?v=6">
+  <link rel="stylesheet" href="styles.css?v=buildings-6">
+  <script src="building-placement.js?v=1" defer></script>
   <script src="road-editor.js" defer></script>
-  <script src="city-save.js?v=7" defer></script>
-  <script src="pre-sorting.js?v=4" defer></script>
+  <script src="city-save.js?v=8" defer></script>
+  <script src="pre-sorting.js?v=5" defer></script>
   <script src="traffic-diagnostics.js?v=1" defer></script>
-  <script src="game.js?v=20" defer></script>
+  <script src="game.js?v=21" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -52,7 +53,7 @@
 
       <div class="category-tabs" role="group" aria-label="Tool categories">
         <button class="category-tab on" data-tool="ROAD" data-category="roads" aria-pressed="true">Roads</button>
-        <button class="category-tab" data-tool="ZONE" data-category="zones" aria-pressed="false">Zones</button>
+        <button class="category-tab" data-tool="BUILDING" data-category="buildings" aria-pressed="false">Buildings</button>
         <button class="category-tab" data-tool="JUNCTION" data-category="junctions" aria-pressed="false">Junctions</button>
         <button class="category-tab" data-tool="BULLDOZE" data-category="city" aria-pressed="false">City</button>
       </div>
@@ -86,20 +87,22 @@
         </section>
       </section>
 
-      <section class="category-panel" id="panel-zones" data-category-panel="zones" aria-label="Zoning tools" hidden>
-        <div class="section-title">Shape each neighborhood <span>2 to paint</span></div>
-        <button data-tool="ZONE" class="tool primary-tool"><span class="tool-icon">▦</span><span>Paint zones</span><kbd>2</kbd></button>
-        <section id="panel-zone" style="display:none">
-          <div class="zones">
-            <button data-zone="1"><i class="dot residential"></i>Homes</button>
-            <button data-zone="2"><i class="dot commercial"></i>Shops</button>
-            <button data-zone="3"><i class="dot industry"></i>Industry</button>
+      <section class="category-panel" id="panel-buildings" data-category-panel="buildings" aria-label="Building placement" hidden>
+        <div class="section-title">Place buildings <span>2 to build</span></div>
+        <section id="panel-building">
+          <div class="building-types" role="group" aria-label="Building type">
+            <button type="button" data-building-type="R" aria-pressed="true"><i class="dot residential"></i>Residential</button>
+            <button type="button" data-building-type="C" aria-pressed="false"><i class="dot commercial"></i>Commercial</button>
+            <button type="button" data-building-type="I" aria-pressed="false"><i class="dot industry"></i>Industrial</button>
           </div>
-          <div class="segmented zone-shapes" role="group" aria-label="Zone painting shape">
-            <button type="button" data-zone-shape="circle" aria-pressed="true">Circle</button>
-            <button type="button" data-zone-shape="rectangle" aria-pressed="false">Rectangle</button>
+          <div class="section-title">Building size <span>Parking included</span></div>
+          <div class="segmented building-sizes" role="group" aria-label="Building size">
+            <button type="button" data-building-size="S" aria-pressed="true">Small<small>4 × 3</small></button>
+            <button type="button" data-building-size="M" aria-pressed="false">Medium<small>6 × 4</small></button>
+            <button type="button" data-building-size="L" aria-pressed="false">Large<small>8 × 8</small></button>
           </div>
-          <p class="panel-note">Circle: drag to paint; Ctrl + scroll resizes. Rectangle: drag to fill an area. Right-drag erases with the selected shape.</p>
+          <p id="building-summary" class="building-summary">4 × 3 tiles · 1 parking space</p>
+          <p class="panel-note">Click beside a road to place. Drag along the same road to preview a row, then release to build. Esc or right-click cancels. Use City removal to demolish.</p>
         </section>
       </section>
 
@@ -169,7 +172,6 @@
       </section>
 
       <section class="tool-help" aria-live="polite"><span class="help-icon">i</span><p id="hint">Drag between two points to build a straight road.</p></section>
-      <footer>Built on <a href="https://anthonyellis.dev/projects/arterial/" target="_blank" rel="noreferrer">Arterial by Anthony Ellis ↗</a></footer>
     </aside>
 
     <section id="hud" aria-label="Traffic overview">

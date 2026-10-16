@@ -15,12 +15,14 @@ Double-click **Play Arterial.cmd** in this folder to play. You can also open **i
 - **Priority road:** choose the tool, then click each road arm that should have right of way. Click an arm again to remove its priority; the other approaches yield.
 - **Lane connections:** choose the tool and click a regular junction. Click an incoming lane end to select it, or drag from it to an outgoing lane end to add or remove that movement. Only the lane you edit becomes manual; untouched lanes keep their automatic turns. Choose **Reset selected lane** to restore its automatic turns. Roundabouts stay automatic. Changes are saved with the city.
 - **Pre-sorting lanes:** choose the tool under intersection controls, click a regular junction, then click an incoming road arm near it to add turning lanes on that side only. Click the same arm again to remove its lanes. **1 box** is the default and adds a left-turn lane; if that arm only has a right turn, it adds a right-turn lane. **2 boxes** adds both where available. The choice applies to new placements and leaves existing arms unchanged. Drag each blue handle along its road to set that lane's length; release to apply it. Escape cancels a resize. Through lanes remain available, and cars merge into the turning lanes near the junction. Lengths stop before the next intersection. Use **Remove all pre-sorting lanes** to clear the selected junction. Lengths are saved with the city.
-- **City:** click vehicles to inspect them. **Remove roads or buildings** is a toggle that starts off; turn it on to remove objects by clicking or dragging. Press **6** to toggle removal; from another category, it enters City with removal enabled. Right-click removes map objects in other categories and follows the toggle in City.
+- **City:** click vehicles to inspect them. **Remove roads or buildings** is a toggle that starts off; turn it on to remove objects by clicking or dragging. Press **6** to toggle removal; from another category, it enters City with removal enabled. Right-click removes map objects in road and junction tools, cancels building previews, and follows the removal toggle in City.
 - **Escape:** cancel the road you are drawing. Changing tools also cancels an unfinished road.
 
 Use **WASD** to pan. Hold **Space** or **Shift** and drag to pan, or scroll to zoom. **F** fits the city, **P** pauses, **Q** cycles road types, **C** switches straight/curve, and **L** toggles lane routing. The view buttons also zoom and fit.
 
-Choose **Zones** in the left tool panel for homes, shops and industry. **2** selects zone painting. Choose **Circle** to paint continuously as you drag, or **Rectangle** to drag out and fill a grid-aligned area with independently sized sides. Right-drag erases with the selected shape; Ctrl + scroll adjusts the circle brush size. The starter city already contains buildings and traffic. The missing road connection along its north side is a useful first experiment.
+Choose **Buildings** (shortcut **2**), select **Residential**, **Commercial**, or **Industrial**, then **Small**, **Medium**, or **Large**. Click beside a road to place a building immediately. Drag along the same road and side to preview a row, then release to place the valid lots; red lots are skipped. **Escape**, right-click, or changing tools cancels a preview. Buildings follow the local direction of straight and curved roads. Their whole lot, including parking, must clear roads, other buildings, junctions, turning lanes, water, and map boundaries.
+
+Small lots are **4 × 3 tiles** with **1 parking space**, Medium **6 × 4** with **4 spaces**, and Large **8 × 8** with **16 spaces**. One building tile represents 5 metres. Parking is drawn inside the lot and each building has one road entrance; parking-space occupancy is not simulated. Larger buildings contain more residents/jobs and produce or attract more trips. Buildings stay the size you chose and do not appear, grow, or disappear automatically. Buildings that lose road access remain in place with an orange marker and stop sending trips until reconnected. Road builds, widening, reshaping, and turning-lane changes that would consume a lot are rejected. Use City removal to demolish a building deliberately. The starter city already contains placed buildings and traffic.
 
 **Dark mode** changes the controls and map together. Your choice is remembered. The simulated time of day affects travel demand, while your selected theme controls the map lighting.
 
@@ -30,15 +32,13 @@ Choose **Zones** in the left tool panel for homes, shops and industry. **2** sel
 - The **recovery** slot updates every 30 seconds and when the page closes. A new game starts with a fresh starter city; use Load to resume a saved one. The manual slot changes only when you click Save city.
 - **Export** downloads an `arterial-city.json` backup. **Import** opens one of these backups after validating it. Invalid files leave the current city intact.
 - Browser-local storage belongs to the browser and file location. Clearing browsing data, moving this folder or using another browser can make those saves unavailable. Use Export for lasting backups.
-- Roads, curves, junction controls, priority approaches, roundabouts, zoning, buildings, time, camera and drawing settings are saved. Active vehicles start fresh trips after loading; exact in-flight journeys and signal countdowns are not saved.
+- Roads, curves, junction controls, priority approaches, roundabouts, fixed building lots and parking entrances, time, camera and drawing settings are saved. Older zoning saves remain importable: existing buildings keep their old footprint and capacity, while empty painted zones are discarded. Active vehicles start fresh trips after loading; exact in-flight journeys and signal countdowns are not saved.
 
-## Credits and local adaptation
+## About the game
 
-Original simulation: **Anthony Ellis**, [Arterial](https://anthonyellis.dev/projects/arterial/), [source](https://github.com/AnthonyEllisDev/portfolio/blob/main/demos/arterial.html).
+Arterial is a top-down traffic simulation with road and building tools, traffic planning, themes and city persistence. It draws visual inspiration from the [Trafficity gameplay trailer](https://www.youtube.com/watch?v=fUkBn6H-d-A). No Trafficity artwork or code is included. Elevated roads and grade-separated interchanges are outside this version.
 
-`arterial-original.html` is the unmodified downloaded reference. This local adaptation retains the original road graph and car-following foundations, extends traffic planning and movement, and adds road tools, presentation, themes and persistence. Visual inspiration: the [Trafficity gameplay trailer](https://www.youtube.com/watch?v=fUkBn6H-d-A). No Trafficity artwork or code is included. This is a top-down simulation; elevated roads and grade-separated interchanges are outside this version.
-
-The original source was supplied for personal local adaptation. Check the upstream project's license/permissions before redistributing an adapted version.
+`arterial-original.html` is an archived reference file and is not loaded by the playable game. Check its upstream license and permissions before redistributing any files derived from it.
 
 ## Development checks
 

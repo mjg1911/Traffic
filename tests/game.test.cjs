@@ -60,7 +60,7 @@ test('invalid too-short roads leave network unchanged',()=>{
   assert.equal(a.buildRoad({x:200,y:200},{x:210,y:200},0).ok,false);
   assert.equal(a.NET.edges.length,count);
 });
-test('city save/load round trip preserves roads buildings zoning settings and camera',()=>{
+test('city save/load round trip preserves roads fixed lots settings and camera',()=>{
   const {api:a}=loadGame();
   a.EDIT.grid=true;a.EDIT.drawMode='curve';
   a.CAM.x=a.CAM.tx=1250;a.CAM.y=a.CAM.ty=875;a.CAM.z=a.CAM.tz=.8;
@@ -82,6 +82,7 @@ test('malformed import retains live network and traffic',()=>{
 test('roundabout topology survives save/load and traffic resumes',()=>{
   const {api:a}=loadGame();
   const n=a.NET.nodes.find(n=>n.degree>=3);
+  for(const b of a.CITY.buildings.slice())if(Math.hypot(b.x-n.x,b.y-n.y)<130)a.CITY.demolish(b);
   assert.equal(a.NET.makeRoundabout(n,60),true);
   const saved=JSON.parse(JSON.stringify(a.captureCity()));
   a.restoreCity(saved);
@@ -145,6 +146,7 @@ test('upgrades demolition and roundabout removal remain safe during traffic',()=
   const {api:a}=loadGame();
   const n=a.NET.nodes.find(n=>n.degree>=3);
   a.NET.setType(a.NET.edges[0],'AVENUE');
+  for(const b of a.CITY.buildings.slice())if(Math.hypot(b.x-n.x,b.y-n.y)<130)a.CITY.demolish(b);
   assert.equal(a.NET.makeRoundabout(n,60),true);
   const id=[...a.W.rings.keys()][0];
   assert.equal(a.NET.removeRoundabout(id),true);
@@ -177,36 +179,14 @@ test('a rejected duplicate subsegment of a long road never changes the graph',()
   assert.equal(a.buildRoad({x:1750,y:100},{x:5450,y:100},0).ok,false);
   assert.equal(JSON.stringify(a.captureCity()),before);
 });
-test('newly developed buildings stay outside road pavement at junctions',()=>{
+test('placed lots stay outside road pavement and junctions',()=>{
   const {api:a}=loadGame();
-  const junction=a.NET.nodes.find(n=>n.degree>=3);
-  assert.ok(junction);
-  a.CITY.zone.fill(0);
-  a.CITY.used.fill(0);
-  a.CITY.buildings=[];
-  a.CITY.paint({x:junction.x,y:junction.y},250,1);
-  a.CITY.demand={R:1,C:0,I:0};
-  a.CITY.rebuildCandidates();
-  const before=new Set(a.CITY.buildings);
-  for(let i=0;i<300;i++)a.CITY.develop();
-  const developed=a.CITY.buildings.filter(b=>!before.has(b));
-  assert.ok(developed.length>0);
-  for(const b of developed){
+  assert.ok(a.CITY.buildings.length>20);
+  for(const b of a.CITY.buildings) {
     assert.ok(b.edge&&b.lane);
-    for(const e of a.NET.edges){
-      if(!e.centre)continue;
-      const near=e.centre.nearest({x:b.x,y:b.y});
-      const tangent=e.centre.dir(near.s);
-      const normal={x:-tangent.y,y:tangent.x};
-      const wob=.82+.36*b.seed;
-      const width=b.size*wob;
-      const height=b.size*(b.type==='I'?.86:.95)/wob;
-      const u={x:Math.cos(b.angle),y:Math.sin(b.angle)};
-      const v={x:-u.y,y:u.x};
-      const support=Math.abs(normal.x*u.x+normal.y*u.y)*width/2+
-        Math.abs(normal.x*v.x+normal.y*v.y)*height/2;
-      assert.ok(near.d>=e.halfWidth+support,
-        `building at (${b.x.toFixed(1)}, ${b.y.toFixed(1)}) overlaps a road`);
-    }
+    assert.equal(a.CITY.overlapsRoad(b),false);
   }
+  const junction=a.NET.nodes.find(n=>n.degree>=3);
+  const rejected=a.CITY.previewBuilding({x:junction.x+5,y:junction.y+5},'R','L');
+  assert.equal(rejected.ok,false);
 });

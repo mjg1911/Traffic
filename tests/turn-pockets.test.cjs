@@ -125,7 +125,7 @@ test('a routed car enters a short pocket and completes its intended turn',()=>{
 test('buildings cannot occupy the extra pavement of a turning pocket',()=>{
   const {a,node}=fixture();a.addPreSorting(node,2);
   const lane=node.lanesIn.find(l=>l.pocket==='right'),p=lane.pos(lane.length-45);
-  assert.equal(a.CITY.overlapsRoad({x:p.x,y:p.y,size:4,seed:.5,type:'R',angle:0}),true);
+  assert.equal(a.CITY.overlapsRoad({x:p.x,y:p.y,width:4,depth:4,angle:0}),true);
 });
 test('turning pockets meet adjacent through lanes at one lane width at their entry',()=>{
   const {a,node}=fixture();a.addPreSorting(node,2);

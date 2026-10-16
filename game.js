@@ -1,5 +1,4 @@
 "use strict";
-// Local adaptation of Arterial by Anthony Ellis. Original: arterial-original.html.
 const EDIT = {grid: false, drawMode: 'straight'};
 const SIDEBAR_TEXT_SIZE_KEY = 'arterial-sidebar-text-size';
 let sidebarTextLarge = false;
@@ -11,7 +10,7 @@ document.documentElement.dataset.theme = theme;
    ARTERIAL — City Traffic Simulator  (V5)
    ───────────────────────────────────────────────────────────────────────────
    A dependency-free city builder whose gameplay *is* traffic engineering.
-   Zone land, lay a road network, and watch a microscopic traffic model decide
+   Place buildings, lay roads, and watch a microscopic traffic model decide
    whether your city breathes or chokes. Nothing here is a sprite or a tile:
    every vehicle is integrated against a parametric rail, every junction is
    arbitrated, every trip is routed.
@@ -41,10 +40,9 @@ document.documentElement.dataset.theme = theme;
    §6  Junctions          Signal / stop / yield / priority-road control,
                           reservation-based right-of-way against the conflict
                           matrix, priority for ring traffic, and clear exits.
-   §7  City               Zone painting, buildings that develop on their own
-                          where there is road access, level up when their trips
-                          are served quickly and abandon when they are not.
-                          RCI demand, population, jobs, happiness. No failure.
+   §7  City               Fixed building lots, parking entrances and direct
+                          placement along straight and curved roads. Population,
+                          jobs, service, and size-aware residential/freight trips.
    §8  Camera / render    Matrix pan-zoom, day-night cycle, road markings,
                           debug overlay.
    §9  Loop               Fixed 60 Hz integration decoupled from rAF with
@@ -83,16 +81,11 @@ const CFG = {
   STOP_V: 7,                // must be slower than this to clear a stop sign
 
   // city
-  CELL: 34,                 // zoning grid resolution
-  BUILD_EVERY: 0.85,        // seconds between development attempts
-  ROAD_NEAR: 34, ROAD_FAR: 96,   // a cell needs a road within this band
   MAX_CARS: 240,
   TRIP_R: 58,               // seconds between trips from a level-1 home
   TRIP_I: 105,               // seconds between freight runs from a level-1 plant
   VISIT_TIME: 3.0,
   DAY_LENGTH: 240,          // seconds per in-game day
-  LEVEL_UP: 0.72, LEVEL_DOWN: 0.3,  // service score thresholds
-  ABANDON_TIME: 45,         // seconds of starvation before a building dies
 };
 
 const LW = CFG.LANE_W;
@@ -861,11 +854,13 @@ const NET = {
   },
 
   setType(e, type) {
-    if (e.type === 'RING' || type === 'RING') return;
+    if (e.type === 'RING' || !ROADS[type] || type === 'RING') return false;
+    if(!canEditRoadGeometry({edge:e,type}))return false;
     e.type = type;
     if (Math.abs(e.bend) > e.chord * 0.4) e.bend = Math.sign(e.bend) * e.chord * 0.4;
     this.rebuildAround([e.n1, e.n2]);
     this.reattachAll();
+    return true;
   },
 
   reverseOneWay(e) {
@@ -1038,7 +1033,9 @@ const NET = {
   /* ── roundabouts: a graph rewrite, not a simulation special case ── */
 
   makeRoundabout(node, R) {
-    if (node.isRing || node.degree < 3) return false;
+    if (node.isRing || node.degree < 3 || !Number.isFinite(R) || R<20) return false;
+    const clearance=R+Math.max(...node.edges.map(e=>e.halfWidth))+2;
+    if(CITY.buildings.some(lot=>BuildingPlacement.corridorOverlaps(lot,[node.pos],clearance)))return false;
     const cx = node.x, cy = node.y;
     const arms = node.edges.map(e => {
       const o = e.other(node);
@@ -1482,6 +1479,7 @@ function lanePreparationSpeed(car,lane,movement,startS=0) {
 // Work backwards from the stop line (or kerb) so waiting for a gap never
 // consumes the distance needed for the remaining adjacent lane changes.
 const MERGE_GAP_RECOVERY_SECONDS = 5;
+const CONNECTOR_MERGE_DEADLOCK_SECONDS = 5;
 const ROAD_NO_PROGRESS_RECOVERY_SECONDS = 120;
 
 function laneChangeDistanceBudget(car, lane, target) {
@@ -1705,6 +1703,16 @@ class Car {
     return false;
   }
 
+  despawnFromStrand(reason) {
+    if (this.dead || !this.track) return false;
+    const source = this.track;
+    trafficDiagnostics.recordTripFailure({vehicleId:this.id,destinationId:this.target?.id ?? null,
+      simTime:W.time,phase:this.phase,reason,recoveryAttempted:false,trackId:source.id,
+      trackLabel:diagnosticTrackLabel(source),s:this.s});
+    this.kill();
+    return true;
+  }
+
   findLeader() {
     if (this.manoeuvre) {
       const m = this.manoeuvre, s = this.s * m.target.length / m.source.length;
@@ -1782,8 +1790,8 @@ class Car {
       this.ppx = this.px; this.ppy = this.py;
       this.enterT = Math.max(0, this.enterT - dt);
       const progress = 1 - this.enterT / 0.4;
-      this.px = lerp(this.enterFromX, this.target.x, progress);
-      this.py = lerp(this.enterFromY, this.target.y, progress);
+      this.px = lerp(this.enterFromX, (this.target.entrance||this.target).x, progress);
+      this.py = lerp(this.enterFromY, (this.target.entrance||this.target).y, progress);
       if (this.enterT <= 0) {
         this.phase = 'VISIT';
         this.visitT = CFG.VISIT_TIME * (0.6 + rng());
@@ -2008,6 +2016,13 @@ class Car {
       this.hadClaimDuringStop = false;
     }
     if (this.track && this.phase !== 'ENTER' && this.phase !== 'VISIT') {
+      const connectorMergeDeadlock = this.claimClearing && this.track.kind === 'LANE' &&
+        this.wantIdx !== null && this.wantIdx !== this.track.idx && this.s < this.len / 2 &&
+        this.lastMotionDiagnostic.limiter === 'lane-merge-hold';
+      if (connectorMergeDeadlock && this.noProgressSeconds >= CONNECTOR_MERGE_DEADLOCK_SECONDS) {
+        this.despawnFromStrand('connector-clearance-merge-deadlock');
+        return;
+      }
       if (this.waitReason === 'merge-gap' && this.noProgressSeconds >= MERGE_GAP_RECOVERY_SECONDS) {
         this.recoverFromStrand('merge-gap-timeout');
         return;
@@ -2763,8 +2778,8 @@ const W = {
   preSortingCount: 1,
   laneEditSource: null,
   roadType: 'STREET',
-  zoneType: 1,
-  zoneShape: 'circle',
+  buildingType: 'R',
+  buildingSize: 'S',
   builtRoad: 0,
   laneChanges: 0,
 };
@@ -2808,269 +2823,219 @@ function crossesWater(a, b) {
   return pointInWater(a) || pointInWater(b);
 }
 
-/* ─────────────────────────  buildings & zoning  ───────────────────────── */
+/* ─────────────────────────  fixed buildings & road access  ───────────────────────── */
 
-const ZONE_NONE = 0, ZONE_R = 1, ZONE_C = 2, ZONE_I = 3;
-const ZONE_KEY = { 1: 'R', 2: 'C', 3: 'I' };
-const ZONE_COL = { 1: '#4ade80', 2: '#60a5fa', 3: '#fbbf24' };
+const LOT_COL = {R:'#4ade80',C:'#60a5fa',I:'#fbbf24'};
+const roadSamples = new WeakMap();
+function sampleRoadPath(path, start = 0) {
+  if (!start && roadSamples.has(path)) return roadSamples.get(path);
+  let points;
+  if(path instanceof Path && !start) {
+    // A quadratic lies in its control triangle: bounding the control point's
+    // distance from each chord bounds the entire curve's approximation error.
+    points=[path.p0];
+    const flatten=(a,c,b,depth=0)=>{
+      if(distanceToSegment(c,a,b)<.2||depth>=16){points.push(b);return;}
+      const ac=V.mix(a,c,.5),cb=V.mix(c,b,.5),mid=V.mix(ac,cb,.5);
+      flatten(a,ac,mid,depth+1);flatten(mid,cb,b,depth+1);
+    };
+    flatten(path.p0,path.p1,path.p2);
+  } else {
+    const count = Math.max(2, Math.ceil((path.length-start)/2));
+    points=Array.from({length:count+1},(_,i)=>path.pos(start+(path.length-start)*i/count));
+  }
+  if (!start) roadSamples.set(path,points);
+  return points;
+}
+function distanceToSegment(p,a,b) {
+  const dx=b.x-a.x,dy=b.y-a.y,length=dx*dx+dy*dy;
+  const t=length?clamp(((p.x-a.x)*dx+(p.y-a.y)*dy)/length,0,1):0;
+  return Math.hypot(p.x-a.x-dx*t,p.y-a.y-dy*t);
+}
 
-function zoneRectangleBounds(start, end) {
-  const a = CITY.cellOf(start), b = CITY.cellOf(end), size = CFG.CELL;
-  return {
-    x0: Math.min(a.cx, b.cx) * size, y0: Math.min(a.cy, b.cy) * size,
-    x1: (Math.max(a.cx, b.cx) + 1) * size, y1: (Math.max(a.cy, b.cy) + 1) * size,
-  };
+function polygonOverlapsLot(lot, polygon) {
+  if (!polygon || !polygon.length) return false;
+  if (polygon.some(p=>BuildingPlacement.contains(lot,p))) return true;
+  const corners=BuildingPlacement.corners(lot);
+  for(const corner of corners) {
+    let inside=false;
+    for(let i=0,j=polygon.length-1;i<polygon.length;j=i++) {
+      const a=polygon[i],b=polygon[j];
+      if((a.y>corner.y)!==(b.y>corner.y) && corner.x<(b.x-a.x)*(corner.y-a.y)/(b.y-a.y)+a.x) inside=!inside;
+    }
+    if(inside) return true;
+  }
+  return BuildingPlacement.corridorOverlaps(lot,polygon.concat([polygon[0]]),.35);
+}
+function lotOverlapsEdge(lot,edge) {
+  if (!edge.centre) return false;
+  const near=edge.centre.nearest(lot);
+  if(near.d>edge.halfWidth+Math.hypot(lot.width,lot.depth)/2+LW*3+2) return false;
+  return BuildingPlacement.corridorOverlaps(lot,sampleRoadPath(edge.centre),edge.halfWidth+.35) ||
+    polygonOverlapsLot(lot,edge.pocketSurface);
+}
+function roadConsumesLots(path,halfWidth) {
+  const points=sampleRoadPath(path);
+  return CITY.buildings.some(b=>BuildingPlacement.corridorOverlaps(b,points,halfWidth+.35));
+}
+
+// Build proposed pavement in detached geometry. Rejected edits must not replace
+// live lanes, move vehicles, or consume IDs.
+function canEditRoadGeometry(change) {
+  if(!CITY.buildings.length)return true;
+  const previousId=_id;
+  try {
+    const nodes=new Map(NET.nodes.map(n=>[n,Object.assign(Object.create(GNode.prototype),n,
+      {edges:[],preSorting:JSON.parse(JSON.stringify(n.preSorting))})]));
+    if(change.node)nodes.get(change.node).preSorting=JSON.parse(JSON.stringify(change.preSorting));
+    const edges=NET.edges.map(e=>{
+      const candidate=Object.assign(Object.create(Edge.prototype),e,{n1:nodes.get(e.n1),n2:nodes.get(e.n2)});
+      if(e===change.edge) {
+        if(change.type)candidate.type=change.type;
+        if(change.bend!==undefined)candidate.bend=change.bend;
+      }
+      candidate.n1.edges.push(candidate);candidate.n2.edges.push(candidate);return candidate;
+    });
+    for(const n of nodes.values())n.r=nodeRadius(n);
+    for(const e of edges)e.build();
+    for(const n of nodes.values())n.r=nodeRadius(n);
+    for(const e of edges)e.build();
+    for(const lot of CITY.buildings) {
+      for(let i=0;i<edges.length;i++) {
+        if(lotOverlapsEdge(lot,edges[i])&&!lotOverlapsEdge(lot,NET.edges[i]))return false;
+      }
+      for(const [original,n] of nodes) {
+        const radius=Math.max(11,...n.edges.map(e=>e.halfWidth))+2;
+        const oldRadius=Math.max(11,...original.edges.map(e=>e.halfWidth))+2;
+        if(radius>oldRadius&&BuildingPlacement.corridorOverlaps(lot,[n.pos],radius))return false;
+      }
+    }
+    return true;
+  } finally {_id=previousId;}
 }
 
 class Building {
-  constructor(x, y, type, cell) {
-    this.id = uid();
-    this.x = x; this.y = y;
-    this.type = type;                  // 'R' | 'C' | 'I'
-    this.level = 1;
-    this.cell = cell;
-    this.edge = null;
-    this.forward = true;
-    this.laneIdx = 0;
-    this.tPos = 0.5;
-    this.angle = 0;
-    this.service = 0.65;
-    this.starve = 0;
-    this.since = 0;
-    this.trips = 0;
-    this.outTimer = 2 + rng() * 8;
-    this.born = W.time;
-    this.dead = false;
-    this.seed = rng();
+  constructor(x,y,type,cell) {
+    this.id=uid();this.x=x;this.y=y;this.type=type;this.level=1;
+    this.sizeKey='S';this.width=60;this.depth=45;this.parking=1;
+    this.cell=cell;this.angle=0;this.entrance={x,y};this.access=null;
+    this.edge=null;this.forward=true;this.laneIdx=0;this.tPos=.5;
+    this.service=.65;this.starve=0;this.since=0;this.trips=0;
+    this.outTimer=2+rng()*8;this.born=W.time;this.dead=false;this.seed=rng();
   }
-  get size() { return (this.type === 'R' ? 17 : this.type === 'C' ? 21 : 26) + this.level * 4; }
+  get size() {return Math.max(this.width,this.depth);}
+  get multiplier() {return this.sizeKey==='LEGACY'?this.level:BuildingPlacement.SIZES[this.sizeKey].multiplier;}
   get lane() {
-    if (!this.edge || !this.edge.centre) return null;
-    const g = this.forward ? this.edge.fwd : this.edge.bwd;
-    if (!g || !g.length) return null;
-    return g[Math.min(this.laneIdx, g.length - 1)] || null;
+    if(!this.edge || !this.edge.centre || this.disconnected) return null;
+    const group=this.forward?this.edge.fwd:this.edge.bwd;
+    return group?.find(l=>l.idx===this.laneIdx&&!l.pocket)||null;
   }
-  get s() { const l = this.lane; return l ? clamp(this.tPos * l.length, 2, l.length - 2) : 0; }
-  get people() { return this.type === 'R' ? this.level * 9 : 0; }
-  get jobs() { return this.type === 'C' ? this.level * 8 : this.type === 'I' ? this.level * 13 : 0; }
+  get s() {const l=this.lane;return l?this.tPos*l.length:0;}
+  get people() {return this.type==='R'?this.multiplier*9:0;}
+  get jobs() {return this.type==='C'?this.multiplier*8:this.type==='I'?this.multiplier*13:0;}
 }
 
 const CITY = {
-  cols: 0, rows: 0,
-  zone: null, used: null,
-  buildings: [],
-  demand: { R: 0.3, C: 0.15, I: 0.1 },
-  pop: 0, jobs: 0, happiness: 0.8,
-  buildT: 0, tickT: 0,
-  reattachDirty: false,
-  served: 0, missed: 0,
-
+  buildings:[],demand:{R:.3,C:.15,I:.1},pop:0,jobs:0,happiness:.8,
+  tickT:0,reattachDirty:false,served:0,missed:0,
   init() {
-    this.cols = Math.ceil(CFG.WORLD_W / CFG.CELL);
-    this.rows = Math.ceil(CFG.WORLD_H / CFG.CELL);
-    this.zone = new Uint8Array(this.cols * this.rows);
-    this.used = new Uint8Array(this.cols * this.rows);
-    this.near = new Uint8Array(this.cols * this.rows);
-    this.cands = [[], [], []];
-    this.candT = 0;
-    this.buildings = [];
-    this.demand = { R: 0.3, C: 0.15, I: 0.1 };
-    this.pop = 0; this.jobs = 0; this.happiness = 0.8;
-    this.served = 0; this.missed = 0;
-    this.buildT = 0; this.tickT = 0;
+    this.buildings=[];this.demand={R:.3,C:.15,I:.1};this.pop=0;this.jobs=0;
+    this.happiness=.8;this.tickT=0;this.reattachDirty=false;this.served=0;this.missed=0;
   },
-
-  idx(cx, cy) { return cy * this.cols + cx; },
-  cellOf(p) { return { cx: clamp(Math.floor(p.x / CFG.CELL), 0, this.cols - 1), cy: clamp(Math.floor(p.y / CFG.CELL), 0, this.rows - 1) }; },
-  cellCentre(cx, cy) { return { x: (cx + 0.5) * CFG.CELL, y: (cy + 0.5) * CFG.CELL }; },
-
-  applyZoneCell(cx, cy, type) {
-    const cc = this.cellCentre(cx, cy);
-    if (pointInWater(cc)) return;
-    const i = this.idx(cx, cy);
-    if (type === ZONE_NONE) {
-      this.zone[i] = 0;
-      const b = this.buildings.find(b => b.cell === i);
-      if (b) this.demolish(b);
-    } else if (this.zone[i] !== type) {
-      const b = this.buildings.find(b => b.cell === i);
-      if (b) this.demolish(b);
-      this.zone[i] = type;
-    }
-  },
-
-  paint(p, radius, type) {
-    const r = Math.ceil(radius / CFG.CELL);
-    const c = this.cellOf(p);
-    for (let dy = -r; dy <= r; dy++) {
-      for (let dx = -r; dx <= r; dx++) {
-        const cx = c.cx + dx, cy = c.cy + dy;
-        if (cx < 0 || cy < 0 || cx >= this.cols || cy >= this.rows) continue;
-        const cc = this.cellCentre(cx, cy);
-        if (V.dist(cc, p) > radius) continue;
-        this.applyZoneCell(cx, cy, type);
-      }
-    }
-  },
-
-  paintRectangle(start, end, type) {
-    const a = this.cellOf(start), b = this.cellOf(end);
-    const x0 = Math.min(a.cx, b.cx), x1 = Math.max(a.cx, b.cx);
-    const y0 = Math.min(a.cy, b.cy), y1 = Math.max(a.cy, b.cy);
-    for (let cy = y0; cy <= y1; cy++) {
-      for (let cx = x0; cx <= x1; cx++) {
-        this.applyZoneCell(cx, cy, type);
-      }
-    }
-  },
-
   demolish(b) {
-    b.dead = true;
-    this.used[b.cell] = 0;
-    this.buildings = this.buildings.filter(x => x !== b);
-    for (const c of W.cars) if (c.origin === b || c.dest === b) c.dead = true;
+    b.dead=true;this.buildings=this.buildings.filter(x=>x!==b);
+    if(b.lane)b.lane.buildings=b.lane.buildings.filter(x=>x!==b);
+    for(const c of W.cars)if(c.origin===b||c.dest===b)c.dead=true;
+    this.recompute();
   },
-
-  buildingAt(p, tol) {
-    let best = null, bd = Infinity;
-    for (const b of this.buildings) {
-      const d = V.dist2({ x: b.x, y: b.y }, p);
-      const rr = (b.size * 0.75 + (tol || 0)) ** 2;
-      if (d < rr && d < bd) { bd = d; best = b; }
-    }
-    return best;
+  buildingAt(p,tol=0) {
+    return this.buildings.slice().reverse().find(b=>BuildingPlacement.contains(b,p,tol))||null;
   },
-
-  /* ---- attachment: a building's address is (edge, direction, lane, t) ---- */
-
-  attach(b) {
-    let bestE = null, bestS = 0, bd = CFG.ROAD_FAR;
-    const p = { x: b.x, y: b.y };
-    for (const e of NET.edges) {
-      if (!e.centre || e.type === 'RING') continue;
-      if (Math.abs(e.centre.p0.x - p.x) > CFG.ROAD_FAR + e.chord &&
-          Math.abs(e.centre.p2.x - p.x) > CFG.ROAD_FAR + e.chord) continue;
-      const near = e.centre.nearest(p);
-      const d = near.d - e.halfWidth;
-      if (d < bd && near.d > e.halfWidth * 0.4) { bd = d; bestE = e; bestS = near.s; }
-    }
-    if (!bestE) { b.edge = null; return false; }
-    const e = bestE;
-    const cp = e.centre.pos(bestS), dir = e.centre.dir(bestS);
-    const side = Math.sign(V.cross(dir, { x: p.x - cp.x, y: p.y - cp.y })) || 1;
-    const fwd = e.spec.oneway ? true : side > 0;
-    const group = fwd ? e.fwd : e.bwd;
-    if (!group || !group.length) { b.edge = null; return false; }
-    b.edge = e; b.forward = fwd; b.laneIdx = 0;
-    const lane = group[0];
-    b.tPos = clamp(lane.path.nearest(p).s / lane.length, 0.05, 0.95);
-    const n = V.rn(dir);
-    const off = (e.halfWidth + b.size * 0.62 + 4) * side;
-    b.x = cp.x + n.x * off; b.y = cp.y + n.y * off;
-    b.angle = Math.atan2(dir.y, dir.x) + (side > 0 ? 0 : Math.PI);
-    return true;
-  },
-
-  overlaps(x, y, size, skip) {
-    for (const o of this.buildings) {
-      if (o === skip) continue;
-      const need = (size + o.size) * 0.52;
-      if (V.dist2({ x, y }, { x: o.x, y: o.y }) < need * need) return true;
-    }
-    return false;
-  },
-
   overlapsRoad(b) {
-    const wob = 0.82 + 0.36 * b.seed;
-    const width = b.size * wob;
-    const height = b.size * (b.type === 'I' ? 0.86 : 0.95) / wob;
-    const u = { x: Math.cos(b.angle), y: Math.sin(b.angle) };
-    const v = { x: -u.y, y: u.x };
-    for (const e of NET.edges) {
-      if (!e.centre) continue;
-      const near = e.centre.nearest({ x: b.x, y: b.y });
-      const tangent = e.centre.dir(near.s);
-      const normal = { x: -tangent.y, y: tangent.x };
-      const support = Math.abs(normal.x * u.x + normal.y * u.y) * width / 2 +
-        Math.abs(normal.x * v.x + normal.y * v.y) * height / 2;
-      if (near.d < e.halfWidth + support) return true;
-      for(const lane of e.lanes) {
-        if(!(lane.path instanceof ApproachPath)) continue;
-        const hit=lane.path.nearest({x:b.x,y:b.y});
-        const p=lane.pos(Math.max(lane.startS||0,hit.s));
-        if(V.dist(p,{x:b.x,y:b.y}) < LW/2+Math.hypot(width,height)/2+1) return true;
-      }
-    }
-    return false;
+    return NET.edges.some(e=>lotOverlapsEdge(b,e)) || NET.nodes.some(n=>!n.isRing&&n.edges.length&&
+      BuildingPlacement.corridorOverlaps(b,[n.pos],Math.max(...n.edges.map(e=>e.halfWidth))+2));
   },
-
-  clearRoadOverlaps() {
-    for (const b of this.buildings.slice()) {
-      if (this.overlapsRoad(b)) this.demolish(b);
-    }
+  clearRoadOverlaps() {this.reattachDirty=true;},
+  validateLot(lot,others=this.buildings) {
+    if(BuildingPlacement.corners(lot).some(p=>p.x<0||p.y<0||p.x>CFG.WORLD_W||p.y>CFG.WORLD_H)) return 'Lot is outside the building area';
+    if(polygonOverlapsLot(lot,W.river?.poly)) return 'Keep the entire lot out of water';
+    if(others.some(b=>b!==lot&&BuildingPlacement.overlaps(lot,b,1))) return 'Lot overlaps another building or its parking';
+    if(this.overlapsRoad(lot))return 'Lot overlaps a road or turning lane';
+    return '';
   },
-
-  /* ---- development ----
-     Only cells with road access can develop, so the candidate set is derived
-     from the network itself: stamp every cell within reach of a road, then
-     bucket the free zoned ones by type. Rebuilt whenever the network or the
-     zoning changes, which keeps development responsive to a new road. */
-
-  rebuildCandidates() {
-    this.near.fill(0);
-    const rad = Math.ceil(CFG.ROAD_FAR / CFG.CELL);
-    for (const e of NET.edges) {
-      if (e.type === 'RING' || !e.centre) continue;
-      const steps = Math.max(2, Math.ceil(e.centre.length / 16));
-      for (let i = 0; i <= steps; i++) {
-        const c = this.cellOf(e.centre.pos(e.centre.length * i / steps));
-        for (let dy = -rad; dy <= rad; dy++) {
-          const cy = c.cy + dy;
-          if (cy < 0 || cy >= this.rows) continue;
-          for (let dx = -rad; dx <= rad; dx++) {
-            const cx = c.cx + dx;
-            if (cx < 0 || cx >= this.cols) continue;
-            this.near[cy * this.cols + cx] = 1;
-          }
-        }
-      }
-    }
-    this.cands = [[], [], []];
-    for (let i = 0; i < this.zone.length; i++) {
-      const z = this.zone[i];
-      if (!z || this.used[i] || !this.near[i]) continue;
-      this.cands[z - 1].push(i);
-    }
+  address(b,edge) {
+    if(!edge?.centre||edge.type==='RING'||edge.isBridge) return null;
+    const hit=edge.centre.nearest(b.entrance),cp=edge.centre.pos(hit.s),dir=edge.centre.dir(hit.s);
+    const side=Math.sign(V.cross(dir,V.sub(b.entrance,cp)))||1;
+    const normal=V.rn(dir),out={x:-Math.sin(b.angle),y:Math.cos(b.angle)};
+    const front={x:Math.cos(b.angle),y:Math.sin(b.angle)};
+    if(V.dot(out,V.mul(normal,side))<.85||Math.abs(V.dot(front,dir))<.85)return null;
+    if(hit.d<edge.halfWidth-1||hit.d-edge.halfWidth>32) return null;
+    const margin=Math.max(b.width/2+5,CFG.TRUCK_L/2+8);
+    if(hit.s<edge.n1.r+margin||hit.s>edge.centre.length-edge.n2.r-margin)return null;
+    const forward=edge.spec.oneway||side>0;
+    const group=forward?edge.fwd:edge.bwd;
+    const index=edge.spec.oneway&&side<0?edge.spec.lanes-1:0;
+    const lane=group.find(l=>l.idx===index&&!l.pocket);
+    if(!lane) return null;
+    const point=lane.path.nearest(b.entrance),pad=CFG.TRUCK_L/2+8;
+    if(point.s<pad||point.s>lane.length-pad)return null;
+    // A driveway cannot join a through lane across the widened turning area.
+    const record=(forward?edge.n2:edge.n1).preSorting[edge.id];
+    if(record && lane.length-point.s<Math.max(record.left||0,record.right||0)+40)return null;
+    return {edge,forward,laneIdx:index,tPos:point.s/lane.length,access:{edgeId:edge.id,side}};
   },
-
-  develop() {
-    const order = ['R', 'C', 'I'].sort((a, b) => this.demand[b] - this.demand[a]);
-    const type = order[0];
-    if (this.demand[type] <= 0.02) return;
-    const pool = this.cands[type === 'R' ? 0 : type === 'C' ? 1 : 2];
-    if (!pool || !pool.length) return;
-    const want = type === 'R' ? ZONE_R : type === 'C' ? ZONE_C : ZONE_I;
-
-    for (let attempt = 0; attempt < 12; attempt++) {
-      const pick = (rng() * pool.length) | 0;
-      const i = pool[pick];
-      if (i === undefined) continue;
-      if (this.zone[i] !== want || this.used[i]) { pool.splice(pick, 1); continue; }
-      const cx = i % this.cols, cy = (i / this.cols) | 0;
-      const c = this.cellCentre(cx, cy);
-      const b = new Building(c.x + (rng() - 0.5) * 12, c.y + (rng() - 0.5) * 12, type, i);
-      if (!this.attach(b)) continue;
-      if (this.overlapsRoad(b)) continue;
-      if (this.overlaps(b.x, b.y, b.size, b)) continue;
-      this.used[i] = 1;
-      const k = pool.indexOf(i);
-      if (k >= 0) pool.splice(k, 1);
-      b.born = W.time;
-      this.buildings.push(b);
-      const lane = b.lane;
-      if (lane) lane.buildings.push(b);
-      return;
+  attach(b) {
+    const candidates=NET.edges.filter(e=>e.centre&&e.type!=='RING')
+      .sort((a,c)=>(a.id===b.access?.edgeId?-1:c.id===b.access?.edgeId?1:a.centre.nearest(b.entrance).d-c.centre.nearest(b.entrance).d));
+    for(const edge of candidates) {
+      const address=this.address(b,edge);
+      if(address) {Object.assign(b,address);b.disconnected=false;return true;}
     }
+    b.edge=null;b.disconnected=true;return false;
+  },
+  previewOnRoad(edge,s,side,type,sizeKey,others=this.buildings) {
+    const fail=msg=>({ok:false,msg,edge,s,side,type,sizeKey});
+    if(!BuildingPlacement.SIZES[sizeKey]||!['R','C','I'].includes(type))return fail('Choose a building type and size');
+    if(!edge?.centre||!NET.edges.includes(edge)||edge.type==='RING'||edge.isBridge)return fail('Choose a road with kerb access');
+    const lot={...BuildingPlacement.alongRoad(edge.centre,edge.halfWidth,s,side,sizeKey),type,sizeKey,
+      parking:BuildingPlacement.SIZES[sizeKey].parking,edge,s,side};
+    const msg=this.validateLot(lot,others);
+    if(msg)return {...lot,ok:false,msg};
+    const address=this.address(lot,edge);
+    if(!address)return {...lot,ok:false,msg:'Leave space for junctions and turning lanes'};
+    return {...lot,...address,ok:true,msg:'Click to place · Drag along this road for a row'};
+  },
+  previewBuilding(p,type=W.buildingType,sizeKey=W.buildingSize) {
+    let best=null;
+    for(const edge of NET.edges) {
+      if(!edge.centre||edge.type==='RING'||edge.isBridge)continue;
+      const hit=edge.centre.nearest(p),distance=Math.abs(hit.d-edge.halfWidth);
+      if(distance>160||best&&distance>=best.distance)continue;
+      const side=Math.sign(V.cross(edge.centre.dir(hit.s),V.sub(p,edge.centre.pos(hit.s))))||1;
+      best={edge,s:hit.s,side,distance};
+    }
+    return best?this.previewOnRoad(best.edge,best.s,best.side,type,sizeKey):{ok:false,msg:'Move beside a road to place a building'};
+  },
+  previewRow(start,p) {
+    if(!start.edge||!NET.edges.includes(start.edge))return [];
+    const end=start.edge.centre.nearest(p).s,sign=end<start.s?-1:1;
+    const step=BuildingPlacement.SIZES[start.sizeKey].width+BuildingPlacement.GAP;
+    const count=Math.min(100,Math.floor(Math.abs(end-start.s)/step)+1),row=[],accepted=[];
+    for(let i=0;i<count;i++) {
+      const lot=this.previewOnRoad(start.edge,start.s+sign*i*step,start.side,start.type,start.sizeKey,this.buildings.concat(accepted));
+      row.push(lot);if(lot.ok)accepted.push(lot);
+    }
+    return row;
+  },
+  placeBuilding(candidate) {
+    if(!candidate?.edge)return {ok:false,msg:'Choose a road first'};
+    const lot=this.previewOnRoad(candidate.edge,candidate.s,candidate.side,candidate.type,candidate.sizeKey);
+    if(!lot.ok)return lot;
+    const b=new Building(lot.x,lot.y,lot.type);
+    for(const k of ['width','depth','angle','sizeKey','parking','entrance','edge','forward','laneIdx','tPos','access'])b[k]=lot[k];
+    this.buildings.push(b);if(b.lane)b.lane.buildings.push(b);this.recompute();
+    return {ok:true,building:b};
   },
 
   /* ---- economy ---- */
@@ -3114,23 +3079,10 @@ const CITY = {
   },
 
   tickBuildings(dt) {
-    for (const b of this.buildings) {
-      if (!b.edge || !b.lane) {
-        if (!this.attach(b)) { b.starve += dt * 2; b.service = lerp(b.service, 0.05, 0.02); }
-      }
-      b.starve += dt * (b.service < CFG.LEVEL_DOWN ? 1 : 0);
-      b.since += dt;
-      if (b.since > 22) {
-        b.since = 0;
-        if (b.service > CFG.LEVEL_UP && this.demand[b.type] > 0 && b.level < 3 && b.trips > 2) {
-          b.level++;
-          if (b.lane) this.attach(b);
-        } else if (b.starve > CFG.ABANDON_TIME) {
-          b.level--;
-          b.starve = 0;
-          if (b.level <= 0) { this.demolish(b); continue; }
-        }
-      }
+    for(const b of this.buildings) {
+      if(!b.lane) this.attach(b);
+      b.since+=dt;
+      if(!b.lane)b.service=lerp(b.service,.05,.02);
     }
   },
 
@@ -3153,7 +3105,9 @@ const CITY = {
     if (!pool.length) return null;
     pool.sort((a, b) => V.dist2({ x: a.x, y: a.y }, { x: from.x, y: from.y }) -
                         V.dist2({ x: b.x, y: b.y }, { x: from.x, y: from.y }));
-    return pool[Math.min((rng() * 2.6) | 0, pool.length - 1)];
+    const nearby=pool.slice(0,Math.min(4,pool.length));
+    let choice=rng()*nearby.reduce((sum,b)=>sum+b.multiplier,0);
+    return nearby.find(b=>(choice-=b.multiplier)<0)||nearby[nearby.length-1];
   },
 
   spawn(dt, hour) {
@@ -3162,7 +3116,7 @@ const CITY = {
     for (const b of this.buildings) {
       if (b.type === 'C') continue;                 // shops receive, they don't originate
       if (!b.lane) continue;
-      b.outTimer -= dt * f * b.level;
+      b.outTimer -= dt * f * b.multiplier;
       if (b.outTimer > 0) continue;
       b.outTimer = (b.type === 'R' ? CFG.TRIP_R : CFG.TRIP_I) * (0.65 + rng() * 0.8);
       if (W.cars.length >= CFG.MAX_CARS) return;
@@ -3232,7 +3186,7 @@ const IN = {
   moved: 0, bendEdge: null, panFrom: null, space: false,
   panKeys: { w: false, a: false, s: false, d: false },
   brush: 62, erase: false, valid: true, msg: '',
-  zoneStart: null,
+  lotStart: null, lotPreview: [], pointerOnMap:false,
   hoverNode: null, hoverEdge: null, hoverBuilding: null, hoverPriorityArm: null,
   hoverPreSortingArm: null, preSortingFlash: null,
   laneFromLane: null, laneToLane: null, hoverLaneIn: null, hoverLaneOut: null,
@@ -3353,7 +3307,7 @@ function cancelDrawing() {
   IN.mode = 'idle'; IN.startPt = null; IN.endPt = null; IN.startNode = null;
   IN.bendEdge = null; IN.panFrom = null; IN.bend = 0;
   IN.laneFromLane = null; IN.laneToLane = null;
-  IN.zoneStart = null;
+  IN.lotStart = null; IN.lotPreview = [];
 }
 
 function drawingPoint(pointer, start) {
@@ -3442,6 +3396,7 @@ function reshapeRoad(edge,bend) {
     if(other===edge) continue;
     if(pathsOverlap(path,other.centre)||pathIntersections(path,other).some(h=>h.t>.003&&h.t<.997)) return {ok:false,msg:'That bend crosses a road. Build a new connection instead.'};
   }
+  if(!canEditRoadGeometry({edge,bend}))return {ok:false,msg:'That bend overlaps a building lot or parking'};
   edge.bend=bend;edge.isBridge=crossesWater(edge.n1.pos,edge.n2.pos);
   NET.rebuildAround([edge.n1,edge.n2]);CITY.clearRoadOverlaps();CITY.reattachDirty=true;markReroute();
   return {ok:true,msg:'Road reshaped'};
@@ -3452,6 +3407,7 @@ function buildRoad(a,b,bend=0) {
   if(!check.ok) return check;
   if([a.x,a.y,b.x,b.y,bend].some(x=>!Number.isFinite(x))||[a.x,a.y,b.x,b.y].some(x=>Math.abs(x)>9000)) return {ok:false,msg:'Road is outside the building area'};
   const path=roadPath(a,b,bend),hits=[];
+  if(roadConsumesLots(path,roadHalfWidth(ROADS[W.roadType])))return {ok:false,msg:'Road overlaps a building lot or parking'};
   for(const e of NET.edges) if(e.centre&&pathsOverlap(path,e.centre)) return {ok:false,msg:'A road already follows that route'};
   for(const e of NET.edges) if(e.centre) for(const h of pathIntersections(path,e)) hits.push(h);
   hits.sort((x,y)=>x.t-y.t);
@@ -3473,6 +3429,10 @@ function buildRoad(a,b,bend=0) {
       const near=e.centre.nearest(p);
       if(near.d<.8 && (e.type==='RING'||Math.min(V.dist(p,e.n1.pos),V.dist(p,e.n2.pos))<65)) return {ok:false,msg:'Start farther from that junction'};
     }
+  }
+  for(const stop of stops) {
+    const radius=Math.max(roadHalfWidth(ROADS[W.roadType]),...NET.edges.filter(e=>e.centre.nearest(stop.point).d<1).map(e=>e.halfWidth))+2;
+    if(CITY.buildings.some(lot=>BuildingPlacement.corridorOverlaps(lot,[stop.point],radius)))return {ok:false,msg:'Junction overlaps a building lot or parking'};
   }
   const na=nodeAt(a,1),nb=nodeAt(b,1);
   if(na&&nb&&NET.findEdge(na,nb)) return {ok:false,msg:'Those junctions already have a road'};
@@ -3505,8 +3465,11 @@ function commitDrawing() {
 }
 
 cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('pointerenter',()=>{IN.pointerOnMap=true;});
+cv.addEventListener('pointerleave',()=>{IN.pointerOnMap=false;});
 
 cv.addEventListener('pointerdown', e => {
+  IN.pointerOnMap=true;
   cv.setPointerCapture(e.pointerId);
   const r = cv.getBoundingClientRect();
   IN.screen = { x: e.clientX - r.left, y: e.clientY - r.top };
@@ -3531,15 +3494,10 @@ cv.addEventListener('pointerdown', e => {
     return;
   }
 
-  if (W.tool === 'ZONE') {
-    IN.erase = right;
-    if (W.zoneShape === 'rectangle') {
-      IN.mode = 'zone-rectangle';
-      IN.zoneStart = { ...IN.mouse };
-    } else {
-      IN.mode = 'zone';
-      CITY.paint(IN.mouse, IN.brush, right ? ZONE_NONE : W.zoneType);
-    }
+  if (W.tool === 'BUILDING') {
+    if(right) {cancelDrawing();return;}
+    IN.lotStart=CITY.previewBuilding(IN.mouse);
+    IN.lotPreview=[IN.lotStart];IN.mode='building-row';
     return;
   }
 
@@ -3640,7 +3598,8 @@ cv.addEventListener('pointerdown', e => {
           NET.reverseOneWay(hit.edge); markReroute(); toast('One-way direction reversed');
         }
         else if (hit.edge.type === W.roadType) toast(`Already a ${ROADS[W.roadType].name.toLowerCase()}`);
-        else { NET.setType(hit.edge, W.roadType); markReroute(); toast(`Upgraded to ${ROADS[W.roadType].name}`); }
+        else if(NET.setType(hit.edge,W.roadType)) {markReroute();toast(`Upgraded to ${ROADS[W.roadType].name}`);}
+        else toast('Upgrade overlaps a building lot or parking');
       }
       IN.mode = 'idle'; return;
     }
@@ -3689,6 +3648,7 @@ function bulldozeAt(p) {
 }
 
 cv.addEventListener('pointermove', e => {
+  IN.pointerOnMap=true;
   const r = cv.getBoundingClientRect();
   const sx = e.clientX - r.left, sy = e.clientY - r.top;
   IN.moved += Math.hypot(sx - IN.screen.x, sy - IN.screen.y);
@@ -3716,10 +3676,8 @@ cv.addEventListener('pointermove', e => {
         bulldozeAt(IN.mouse);
       }
       return;
-    case 'zone':
-      CITY.paint(IN.mouse, IN.brush, IN.erase ? ZONE_NONE : W.zoneType);
-      return;
-    case 'zone-rectangle':
+    case 'building-row':
+      IN.lotPreview=CITY.previewRow(IN.lotStart,IN.mouse);
       return;
     case 'bulldoze':
       bulldozeAt(IN.mouse);
@@ -3787,22 +3745,13 @@ cv.addEventListener('pointerup', e => {
     IN.mode='idle'; IN.pocketDrag=null; syncUI(); return;
   }
   if(mode==='curve') return;
-  if (mode === 'zone-rectangle') {
-    const r = cv.getBoundingClientRect();
-    const sx = e.clientX - r.left, sy = e.clientY - r.top;
-    IN.moved += Math.hypot(sx - IN.screen.x, sy - IN.screen.y);
-    IN.screen = { x: sx, y: sy };
-    IN.mouse = CAM.toWorld(sx, sy, cw, ch);
-    const type = IN.erase ? ZONE_NONE : W.zoneType;
-    if (IN.moved < 4) {
-      const cell = CITY.cellOf(IN.zoneStart);
-      CITY.applyZoneCell(cell.cx, cell.cy, type);
-    } else {
-      CITY.paintRectangle(IN.zoneStart, IN.mouse, type);
-    }
-    CITY.reattachDirty = true;
-    IN.mode = 'idle'; IN.zoneStart = null;
-    return;
+  if(mode==='building-row') {
+    const r=cv.getBoundingClientRect();
+    IN.mouse=CAM.toWorld(e.clientX-r.left,e.clientY-r.top,cw,ch);
+    const row=CITY.previewRow(IN.lotStart,IN.mouse);
+    let count=0;for(const preview of row)if(preview.ok&&CITY.placeBuilding(preview).ok)count++;
+    toast(count?`Placed ${count} building${count===1?'':'s'}`:(row.find(p=>!p.ok)?.msg||IN.lotStart.msg));
+    cancelDrawing();return;
   }
   if (mode === 'lane-connect') {
     const r = cv.getBoundingClientRect();
@@ -3832,7 +3781,7 @@ cv.addEventListener('pointerup', e => {
     if(EDIT.drawMode==='curve') {IN.mode='curve';IN.msg='Move to shape the curve · Click to build';return;}
     commitDrawing();return;
   }
-  if (mode === 'zone' || mode === 'bulldoze') CITY.reattachDirty = true;
+  if (mode === 'bulldoze') CITY.reattachDirty = true;
   IN.mode='idle';
   IN.startNode = null; IN.startPt = null; IN.bendEdge = null; IN.panFrom = null;
 });
@@ -3842,10 +3791,6 @@ cv.addEventListener('wheel', e => {
   e.preventDefault();
   const r = cv.getBoundingClientRect();
   const sx = e.clientX - r.left, sy = e.clientY - r.top;
-  if (W.tool === 'ZONE' && e.ctrlKey) {
-    IN.brush = clamp(IN.brush * (e.deltaY < 0 ? 1.15 : 1 / 1.15), 24, 220);
-    return;
-  }
   const before = CAM.toWorld(sx, sy, cw, ch);
   CAM.tz = clamp(CAM.tz * (e.deltaY < 0 ? 1.13 : 1 / 1.13), 0.18, 3.2);
   CAM.z = CAM.tz;
@@ -3854,7 +3799,7 @@ cv.addEventListener('wheel', e => {
   CAM.x = CAM.tx; CAM.y = CAM.ty;
 }, { passive: false });
 
-const TOOL_KEYS = { '1': 'ROAD', '2': 'ZONE', '3': 'UPGRADE', '4': 'JUNCTION', '5': 'ROUNDABOUT' };
+const TOOL_KEYS = { '1': 'ROAD', '2': 'BUILDING', '3': 'UPGRADE', '4': 'JUNCTION', '5': 'ROUNDABOUT' };
 window.addEventListener('keydown', e => {
   if(e.target && (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)||e.target.isContentEditable)) return;
   if(e.ctrlKey||e.metaKey||e.altKey) return;
@@ -3898,7 +3843,7 @@ function toast(msg) {
 function hideTip() { const t = $('tip'); if (t) t.style.opacity = '0'; }
 
 function toolCategory(t) {
-  if (t === 'ZONE') return 'zones';
+  if (t === 'BUILDING') return 'buildings';
   if (t === 'JUNCTION' || t === 'ROUNDABOUT' || t === 'PRIORITY' || t === 'LANE_CONNECTIONS' || t === 'PRE_SORTING') return 'junctions';
   if (t === 'BULLDOZE') return 'city';
   return 'roads';
@@ -3919,11 +3864,11 @@ function setTool(t) {
   syncUI();
   $('panel-road').style.display = (t === 'ROAD' || t === 'UPGRADE') ? '' : 'none';
   $('drawing-options').style.display = t === 'ROAD' ? '' : 'none';
-  $('panel-zone').style.display = t === 'ZONE' ? '' : 'none';
+  $('panel-building').style.display = t === 'BUILDING' ? '' : 'none';
   const hints = {
     ROAD: EDIT.drawMode === 'straight' ? 'Drag to build a straight road. Start or end on a road to connect it. G locks to the grid.' : 'Drag to set endpoints, release, then move to shape the curve. Click to build. Esc cancels.',
     BEND: 'Drag an existing road to reshape it. Escape restores its original shape.',
-    ZONE: 'Circle: drag to paint. Rectangle: drag to fill a grid-aligned area. Right-click erases with the selected shape; Ctrl+wheel resizes the circle brush.',
+    BUILDING: 'Choose a type and size. Click beside a road to place; drag along it for a row. Parking is included. Esc or right-click cancels.',
     UPGRADE: 'Click a road to change it to the selected type. Select the same one-way type and click its road again to reverse its direction.',
     JUNCTION: 'Click a junction with 3+ arms to cycle signal → stop → yield.',
     ROUNDABOUT: 'Click a junction with 3+ arms to convert it. Click a ring to remove it.',
@@ -3940,12 +3885,13 @@ function toggleCityRemoval(force) {
   syncUI();
 }
 function setRoadType(t) { W.roadType = t; syncUI(); }
-function setZoneType(z) { W.zoneType = z; syncUI(); }
-function setZoneShape(shape) {
-  if (shape !== 'circle' && shape !== 'rectangle') return;
-  if (IN.mode === 'zone-rectangle') cancelDrawing();
-  W.zoneShape = shape;
-  syncUI();
+function setBuildingType(type) {
+  if(!['R','C','I'].includes(type))return;
+  cancelDrawing();W.buildingType=type;syncUI();
+}
+function setBuildingSize(size) {
+  if(!BuildingPlacement.SIZES[size])return;
+  cancelDrawing();W.buildingSize=size;syncUI();
 }
 
 function diagnosticLaneLabel(lane) {
@@ -4050,12 +3996,13 @@ function renderCarInspector() {
 function syncUI() {
   for (const el of document.querySelectorAll('[data-tool]')) el.classList.toggle('on', el.dataset.tool === W.tool);
   for (const el of document.querySelectorAll('[data-road]')) el.classList.toggle('on', el.dataset.road === W.roadType);
-  for (const el of document.querySelectorAll('[data-zone]')) el.classList.toggle('on', +el.dataset.zone === W.zoneType);
-  for (const el of document.querySelectorAll('[data-zone-shape]')) {
-    const active = el.dataset.zoneShape === W.zoneShape;
-    el.classList.toggle('on', active);
-    el.setAttribute('aria-pressed', String(active));
+  for(const [selector,value,key] of [['[data-building-type]',W.buildingType,'buildingType'],['[data-building-size]',W.buildingSize,'buildingSize']]) {
+    for(const el of document.querySelectorAll(selector)) {
+      const active=el.dataset[key]===value;el.classList.toggle('on',active);el.setAttribute('aria-pressed',String(active));
+    }
   }
+  const preset=BuildingPlacement.SIZES[W.buildingSize];
+  $('building-summary').textContent=`${preset.width/15} × ${preset.depth/15} tiles · ${preset.parking} parking ${preset.parking===1?'space':'spaces'}`;
   const category = toolCategory(W.tool);
   for (const el of document.querySelectorAll('[data-category]')) {
     const active = el.dataset.category === category;
@@ -4132,7 +4079,7 @@ function restart(blankMap = false) {
   syncUI();
 }
 
-/** A starter grid with zoned blocks, so the city has room to grow from. */
+/** Starter road grid. Lots are placed explicitly after the network is ready. */
 function initScene() {
   const cx = CFG.WORLD_W / 2, cy = CFG.WORLD_H / 2;
   const side = W.river.centre[6].x > cx ? -1 : 1;
@@ -4152,23 +4099,26 @@ function initScene() {
     for (let y = 0; y < rows - 1; y++) NET.addEdge(nodes[y][x], nodes[y + 1][x], x === 2 ? 'AVENUE' : 'STREET');
   }
   for (const n of NET.nodes) if (n.degree >= 3) { n.control = 'SIGNAL'; buildSignal(n); }
-  for (let y = 0; y < rows - 1; y++) {
-    for (let x = 0; x < columns - 1; x++) {
-      const zone = x === 2 ? ZONE_I : y === 1 ? ZONE_C : ZONE_R;
-      const blockX = baseX + x * spacing + spacing / 2;
-      const blockY = baseY + y * spacing + spacing / 2;
-      CITY.paint({ x: blockX, y: blockY - 65 }, 132, zone);
-      CITY.paint({ x: blockX, y: blockY + 65 }, 132, zone);
-    }
-  }
   CITY.reattachDirty=true;
 }
 
 function populateStarter() {
-  CITY.rebuildCandidates();
-  for(let i=0;i<190;i++) {CITY.develop();CITY.recompute();}
-  for(let i=0;i<720;i++) simStep(1/60);
-  for(const c of W.cars) {c.ppx=c.px;c.ppy=c.py;c.pang=c.ang;}
+  let index=0;
+  for(const edge of NET.edges) {
+    for(const side of [1,-1]) {
+      const type=index++%5===0?'I':index%3===0?'C':'R';
+      for(let at=90;at<edge.centre.length-75;at+=110) {
+        const sizeKey=index%4===0?'M':'S';
+        const preview=CITY.previewOnRoad(edge,at,side,type,sizeKey);
+        if(preview.ok)CITY.placeBuilding(preview);
+      }
+    }
+  }
+  CITY.recompute();reattachBuildings();CITY.reattachDirty=false;
+  // A short warm-up makes the starter visibly active without growing buildings.
+  for(const b of CITY.buildings)if(b.type!=='C')b.outTimer=.05+rng()*.9;
+  for(let i=0;i<240;i++)simStep(1/60);
+  for(const c of W.cars){c.ppx=c.px;c.ppy=c.py;c.pang=c.ang;}
 }
 
 /* ─────────────────────────  §10  RENDERING  ───────────────────────── */
@@ -4249,26 +4199,6 @@ function drawGround(vb) {
   ctx.strokeRect(0, 0, CFG.WORLD_W, CFG.WORLD_H);
 }
 
-function drawZones(vb) {
-  if(W.tool!=='ZONE' && !W.debug) return;
-  const C = CFG.CELL;
-  const x0 = clamp(Math.floor(vb.x0 / C), 0, CITY.cols - 1), x1 = clamp(Math.ceil(vb.x1 / C), 0, CITY.cols - 1);
-  const y0 = clamp(Math.floor(vb.y0 / C), 0, CITY.rows - 1), y1 = clamp(Math.ceil(vb.y1 / C), 0, CITY.rows - 1);
-  for (const z of [1, 2, 3]) {
-    ctx.beginPath();
-    let any = false;
-    for (let cy = y0; cy <= y1; cy++) {
-      for (let cx = x0; cx <= x1; cx++) {
-        if (CITY.zone[cy * CITY.cols + cx] !== z) continue;
-        ctx.rect(cx * C + 0.6, cy * C + 0.6, C - 1.2, C - 1.2);
-        any = true;
-      }
-    }
-    if (!any) continue;
-    ctx.fillStyle = ZONE_COL[z] + '22';
-    ctx.fill();
-  }
-}
 
 function drawRiver() {
   const poly = W.river.poly;
@@ -4453,39 +4383,108 @@ const BCOL = {
   I: ['#d0bb86', '#bfaa72', '#b59b60'],
 };
 
-function drawBuildings(dark, detail) {
-  for (const b of CITY.buildings) {
-    const grow = clamp((W.time - b.born) / 0.8, 0, 1);
-    const sz = b.size * (0.55 + 0.45 * grow);
+function drawLot(b,dark,detail,preview=false) {
+  const w=b.width,d=b.depth;
+  ctx.save();ctx.translate(b.x,b.y);ctx.rotate(b.angle);
+  if(preview)ctx.globalAlpha=.62;
+  if(b.sizeKey!=='LEGACY') {
+    ctx.fillStyle=theme==='dark'?'#353f43':'#d8d9ce';
+    roundRect(-w/2,-d/2,w,d,2);ctx.fill();
+    ctx.strokeStyle=preview?(b.ok?LOT_COL[b.type]:'#f07168'):(theme==='dark'?'#536458':'#b4bca8');
+    ctx.lineWidth=preview?2/CAM.z:1;ctx.stroke();
+    const rows=b.sizeKey==='L'?2:1,perRow=b.parking/rows;
+    const front=-d/2+3,stallWidth=8,stallDepth=15;
+    ctx.strokeStyle=theme==='dark'?'#a6b5b3':'#f7f8f0';ctx.lineWidth=.9;
+    for(let row=0;row<rows;row++)for(let i=0;i<perRow;i++) {
+      const column=perRow===1?-2:i-perRow/2+(i<perRow/2?-.6:1.6);
+      const x=column*9,y=front+row*31;
+      ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x,y+stallDepth);ctx.lineTo(x+stallWidth,y+stallDepth);ctx.lineTo(x+stallWidth,y);ctx.stroke();
+    }
+    // A central entrance and aisle remain clear between the parking bays.
+    ctx.fillStyle=theme==='dark'?'#46514f':'#bfc3b8';
+    ctx.fillRect(-5,-d/2,10,b.sizeKey==='L'?53:20);
+    ctx.fillStyle=theme==='dark'?'#a7b9a5':'#859d72';
+    ctx.fillRect(-w/2+2,d/2-4,w-4,2);
+  }
+  const bw=b.sizeKey==='LEGACY'?w:w*(b.type==='I'?.82:.72);
+  const bh=b.sizeKey==='LEGACY'?d:(b.sizeKey==='L'?d*.44:d*.45);
+  const by=b.sizeKey==='LEGACY'?-bh/2:d/2-bh-4;
+  ctx.fillStyle=P.shadow;roundRect(-bw/2+2,by+3,bw,bh,2);ctx.fill();
+  ctx.fillStyle=BCOL[b.type][Math.min(2,b.level-1)];roundRect(-bw/2,by,bw,bh,2);ctx.fill();
+  ctx.strokeStyle='rgba(50,70,46,.35)';ctx.lineWidth=1;ctx.stroke();
+  if(detail) {
+    ctx.fillStyle='rgba(255,255,255,.2)';ctx.fillRect(-bw/2+2,by+2,bw-4,Math.max(2,bh*.2));
+    ctx.strokeStyle='rgba(50,70,46,.22)';ctx.beginPath();
+    ctx.moveTo(-bw/2,by+bh);ctx.lineTo(0,by+bh*.36);ctx.lineTo(bw/2,by+bh);ctx.stroke();
+    if(b.type==='I') {ctx.fillStyle='rgba(55,62,50,.32)';ctx.fillRect(-bw*.3,by+bh*.4,bw*.18,bh*.3);}
+    if(dark>.2) {
+      ctx.fillStyle='rgba(255,225,140,.65)';
+      for(let i=0;i<Math.floor(bw/10);i++)ctx.fillRect(-bw/2+4+i*10,by+bh-5,3,2);
+    }
+    if(b.disconnected||b.service<.3) {
+      ctx.fillStyle=b.disconnected?'#ecaa55':'#ff5f6d';ctx.beginPath();ctx.arc(0,by-4,2.5,0,TAU);ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+function drawBuildings(dark,detail) {
+  for(const b of CITY.buildings)drawLot(b,dark,detail);
+}
+
+function drawSelectedCarRoute(alpha) {
+  const car = W.selectedCar;
+  if (toolCategory(W.tool) !== 'city' || !car || !W.cars.includes(car)) return;
+
+  const departure = car.phase === 'BACK' ? car.dest : car.origin;
+  const target = car.phase === 'BACK' ? car.origin : car.dest;
+  const route = car.route.slice(car.ri);
+  if (car.track && route.length && route[0] === car.track) {
     ctx.save();
-    ctx.translate(b.x, b.y);
-    ctx.rotate(b.angle);
-    const wob = 0.82 + b.seed * 0.36;
-    const w = sz * wob, h = sz * (b.type === 'I' ? 0.86 : 0.95) / wob;
-    ctx.fillStyle = P.shadow;
-    roundRect(-w / 2 + 1.5, -h / 2 + 2, w, h, 3); ctx.fill();
-    ctx.fillStyle = BCOL[b.type][b.level - 1];
-    roundRect(-w / 2, -h / 2, w, h, 3); ctx.fill();
-    ctx.strokeStyle = 'rgba(62,77,47,0.25)'; ctx.lineWidth = 1; ctx.stroke();
-    if (detail) {
-      ctx.fillStyle = 'rgba(255,255,255,0.14)';
-      ctx.fillRect(-w / 2, -h / 2, w, Math.max(2, h * 0.22));
-      // lit windows at night
-      if (dark > 0.2 && CAM.z > 0.75) {
-        ctx.fillStyle = `rgba(255,228,160,${0.2 + dark * 0.55})`;
-        const cols = Math.min(4, Math.max(2, Math.round(w / 9))), rows = Math.min(3, Math.max(1, Math.round(h / 10)));
-        for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
-          if (((i * 7 + j * 3 + (b.seed * 97) | 0) % 5) === 0) continue;
-          ctx.fillRect(-w / 2 + 2.5 + i * (w - 5) / cols, -h / 2 + 3 + j * (h - 6) / rows, 2.4, 2.4);
-        }
-      }
-      if (b.service < 0.3) {
-        ctx.fillStyle = '#ff5f6d';
-        ctx.beginPath(); ctx.arc(0, -h / 2 - 4, 2.2, 0, TAU); ctx.fill();
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < route.length; i++) {
+      const track = route[i];
+      const fromS = i === 0 ? clamp(car.s, 0, track.length) : 0;
+      const toS = i === route.length - 1
+        ? clamp(car.goalS, fromS, track.length)
+        : track.length;
+      const steps = Math.max(1, Math.ceil((toS - fromS) / 8));
+      for (let step = 0; step <= steps; step++) {
+        const s = fromS + (toS - fromS) * step / steps;
+        const p = i === 0 && step === 0
+          ? {x: lerp(car.ppx, car.px, alpha), y: lerp(car.ppy, car.py, alpha)}
+          : track.pos(s);
+        if (!started) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+        started = true;
       }
     }
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.setLineDash([3 / CAM.z, 5 / CAM.z]);
+    ctx.strokeStyle = 'rgba(18, 32, 44, 0.88)';
+    ctx.lineWidth = 5 / CAM.z;
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(75, 219, 177, 0.98)';
+    ctx.lineWidth = 2 / CAM.z;
+    ctx.stroke();
     ctx.restore();
   }
+
+  const drawEndpoint = (building, color, fill) => {
+    if (!building) return;
+    ctx.beginPath();
+    ctx.arc(building.x, building.y, Math.max(building.size * 0.8, 10 / CAM.z), 0, TAU);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2 / CAM.z;
+    ctx.stroke();
+  };
+  ctx.save();
+  drawEndpoint(departure, '#4fd8a7', 'rgba(79, 216, 167, 0.12)');
+  drawEndpoint(target, '#ffc04d', 'rgba(255, 192, 77, 0.12)');
+  ctx.restore();
 }
 
 function drawCars(alpha, detail) {
@@ -4614,26 +4613,14 @@ function drawLaneConnectionEditor() {
 }
 
 function drawOverlays() {
-  // zone brush
-  if (W.tool === 'ZONE') {
-    const erasing = IN.erase && (IN.mode === 'zone' || IN.mode === 'zone-rectangle');
-    const color = erasing ? 'rgba(255,120,130,0.8)' : ZONE_COL[W.zoneType] + 'cc';
-    ctx.beginPath();
-    if (W.zoneShape === 'rectangle') {
-      if (IN.mode === 'zone-rectangle' && IN.zoneStart) {
-        const b = zoneRectangleBounds(IN.zoneStart, IN.moved < 4 ? IN.zoneStart : IN.mouse);
-        ctx.rect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
-      }
-    } else {
-      ctx.arc(IN.mouse.x, IN.mouse.y, IN.brush, 0, TAU);
-    }
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.6 / CAM.z;
-    ctx.stroke();
-    if (W.zoneShape === 'circle' || (IN.mode === 'zone-rectangle' && IN.zoneStart)) {
-      ctx.fillStyle = W.zoneShape === 'circle' ? ZONE_COL[W.zoneType] + '14'
-        : erasing ? 'rgba(255,120,130,0.08)' : ZONE_COL[W.zoneType] + '14';
-      ctx.fill();
+  if(W.tool==='BUILDING'&&(IN.pointerOnMap||IN.mode==='building-row')) {
+    const row=IN.mode==='building-row'?IN.lotPreview:[CITY.previewBuilding(IN.mouse)];
+    for(const lot of row)if(lot.width)drawLot({...lot,level:1},dayPhase().dark,true,true);
+    const message=row.find(p=>!p.ok)?.msg||row[0]?.msg;
+    if(message) {
+      ctx.font=`${12/CAM.z}px ui-sans-serif,system-ui,sans-serif`;ctx.textAlign='center';
+      ctx.fillStyle=row.some(p=>!p.ok)?'#df6f5c':P.text;
+      ctx.fillText(message,IN.mouse.x,IN.mouse.y-24/CAM.z);
     }
   }
   // road preview
@@ -4781,10 +4768,9 @@ function collectTracks() {
 }
 
 function reattachBuildings() {
-  const live = new Set(NET.edges);
   for (const e of NET.edges) for (const l of e.lanes) l.buildings.length = 0;
   for (const b of CITY.buildings) {
-    if (!b.edge || !live.has(b.edge)) CITY.attach(b);
+    CITY.attach(b);
     const l = b.lane;
     if (l) l.buildings.push(b);
   }
@@ -4809,9 +4795,7 @@ function simStep(dt) {
   updateSignals(dt);
 
   if (W.rerouteAll) { for (const c of W.cars) c.needsReroute = true; W.rerouteAll = false; }
-  if (CITY.reattachDirty) { reattachBuildings(); CITY.rebuildCandidates(); CITY.reattachDirty = false; }
-  CITY.candT -= dt;
-  if (CITY.candT <= 0) { CITY.candT = 2.5; CITY.rebuildCandidates(); }
+  if (CITY.reattachDirty) { reattachBuildings(); CITY.reattachDirty = false; }
 
   for (const c of W.cars) if (!c.dead && c.phase !== 'VISIT') resyncTrack(c);
 
@@ -4877,8 +4861,6 @@ function simStep(dt) {
   if (removed) W.cars = W.cars.filter(c => !c.dead);
   if (W.selectedCar && !W.cars.includes(W.selectedCar)) W.selectedCar = null;
 
-  CITY.buildT -= dt;
-  if (CITY.buildT <= 0) { CITY.buildT = CFG.BUILD_EVERY; CITY.develop(); }
   CITY.tickT += dt;
   if (CITY.tickT >= 1) { CITY.tickBuildings(CITY.tickT); CITY.recompute(); CITY.tickT = 0; }
   CITY.spawn(dt, hour);
@@ -4907,11 +4889,11 @@ function render(alpha) {
 
   const vb = viewBounds();
   drawGround(vb);
-  drawZones(vb);
   drawRiver();
   drawRoads(detail);
   drawBuildings(dark, detail);
   if (detail) drawSignals();
+  drawSelectedCarRoute(alpha);
   drawCars(alpha, detail);
   drawOverlays();
   if (W.debug) drawDebug();
@@ -5004,7 +4986,7 @@ function frame(now) {
 
 /* Local saves contain authored state; lanes and vehicle trips are rebuilt. */
 const SAVE_KEY='arterial-city-v1', RECOVERY_KEY='arterial-recovery-v1';
-const BUILDING_FIELDS=['x','y','type','level','cell','service','starve','since','trips','outTimer','born','seed'];
+const BUILDING_FIELDS=['x','y','type','level','sizeKey','width','depth','angle','parking','service','starve','since','trips','outTimer','born','seed'];
 function captureCity() {
   return {
     version:CitySave.VERSION,seed:SEED,time:W.time,
@@ -5012,8 +4994,7 @@ function captureCity() {
     edges:NET.edges.map(e=>({id:e.id,n1:e.n1.id,n2:e.n2.id,type:e.type,bend:e.bend})),
     rings:[...W.rings].map(([id,r])=>({id,cx:r.cx,cy:r.cy,R:r.R,hw:r.hw,nodes:r.nodes.map(n=>n.id)})),
     river:{centre:W.river.centre.map(p=>({x:p.x,y:p.y})),poly:W.river.poly.map(p=>({x:p.x,y:p.y}))},
-    zones:Array.from(CITY.zone),
-    buildings:CITY.buildings.map(b=>Object.fromEntries(BUILDING_FIELDS.map(k=>[k,k==='outTimer'?Math.max(0,b[k]):b[k]]))),
+    buildings:CITY.buildings.map(b=>({...Object.fromEntries(BUILDING_FIELDS.map(k=>[k,k==='outTimer'?Math.max(0,b[k]):b[k]])),entrance:{...b.entrance},access:b.edge&&b.access?{...b.access}:null})),
     camera:{x:CAM.tx,y:CAM.ty,z:CAM.tz},trips:W.trips.slice(-1000),
     settings:{grid:EDIT.grid,drawMode:EDIT.drawMode,roadType:W.roadType}
   };
@@ -5036,6 +5017,19 @@ function restoreCity(raw) {
     const buildings=data.buildings.map(b=>{
       const building=new Building(b.x,b.y,b.type,b.cell);
       for(const k of BUILDING_FIELDS) building[k]=b[k];
+      building.entrance={...b.entrance};building.access=b.access?{...b.access}:null;
+      if(b.legacyUnattached) {
+        const p={x:b.x,y:b.y};
+        const road=edges.filter(e=>e.type!=='RING').sort((a,c)=>a.centre.nearest(p).d-c.centre.nearest(p).d)[0];
+        if(road) {
+          const near=road.centre.nearest(p),dir=road.centre.dir(near.s),cp=road.centre.pos(near.s);
+          const side=Math.sign(V.cross(dir,V.sub(p,cp)))||1;
+          building.angle=Math.atan2(dir.y,dir.x)+(side<0?Math.PI:0);
+        }
+        // Infer once without moving the legacy lot, including an isolated lot's
+        // default frontage. Later roads must connect on this fixed frontage.
+        building.entrance={x:b.x+Math.sin(building.angle)*b.depth/2,y:b.y-Math.cos(building.angle)*b.depth/2};
+      }
       return building;
     });
     const rings=new Map(data.rings.map(r=>[r.id,{cx:r.cx,cy:r.cy,R:r.R,hw:r.hw,nodes:r.nodes.map(id=>byId.get(id))}]));
@@ -5045,12 +5039,10 @@ function restoreCity(raw) {
   cancelDrawing();SEED=data.seed;W.time=data.time;W.cars=[];W.selectedCar=null;W.rings=candidate.rings;
   W.river={centre:data.river.centre.map(p=>({...p})),poly:data.river.poly.map(p=>({...p}))};
   NET.nodes=candidate.nodes;NET.edges=candidate.edges;NET.dirty=true;
-  CITY.init();CITY.zone.set(data.zones);CITY.buildings=candidate.buildings;
-  for(const b of CITY.buildings) CITY.used[b.cell]=1;
+  CITY.init();CITY.buildings=candidate.buildings;
   for(const e of NET.edges) {e.isBridge=crossesWater(e.n1.pos,e.n2.pos);e.buildMarkings();}
   // Restored buildings retain their exact saved geometry; derive curb addresses separately.
-  for(const b of CITY.buildings) {const x=b.x,y=b.y;CITY.attach(b);b.x=x;b.y=y;}
-  reattachBuildings();CITY.rebuildCandidates();CITY.reattachDirty=false;CITY.recompute();
+  reattachBuildings();CITY.reattachDirty=false;CITY.recompute();
   W.trips=data.trips.slice();W.stress=0;W.peak=0;W.rerouteAll=true;W.builtRoad=0;W.laneChanges=0;
   trafficDiagnostics=TrafficDiagnostics.createRecorder();diagnosticStartedAt=W.time;W.lastSafetyScan=null;
   W.resumeTraffic=true;
@@ -5169,8 +5161,8 @@ for(const el of document.querySelectorAll('[data-draw]')) el.onclick=()=>{cancel
 for (const el of document.querySelectorAll('[data-tool]')) el.onclick = () => setTool(el.dataset.tool);
 $('btn-city-removal').onclick = () => toggleCityRemoval();
 for (const el of document.querySelectorAll('[data-road]')) el.onclick = () => setRoadType(el.dataset.road);
-for (const el of document.querySelectorAll('[data-zone]')) el.onclick = () => setZoneType(+el.dataset.zone);
-for (const el of document.querySelectorAll('[data-zone-shape]')) el.onclick = () => setZoneShape(el.dataset.zoneShape);
+for(const el of document.querySelectorAll('[data-building-type]'))el.onclick=()=>setBuildingType(el.dataset.buildingType);
+for(const el of document.querySelectorAll('[data-building-size]'))el.onclick=()=>setBuildingSize(el.dataset.buildingSize);
 
 setTool('ROAD');
 syncUI();
@@ -5181,7 +5173,7 @@ window.ARTERIAL = {
   trafficAnalysis,
   get trafficDiagnostics() { return trafficDiagnostics; },
   addPreSorting, resizePreSorting, removePreSorting, preSortingHandles,
-  W, NET, CITY, CFG, CAM, IN, ROADS, simStep, restart, setTool, setRoadType, setZoneType, setZoneShape,
+  W, NET, CITY, CFG, CAM, IN, ROADS, simStep, restart, setTool, setRoadType, setBuildingType, setBuildingSize,
   EDIT, buildRoad, reshapeRoad, drawingPoint, cancelDrawing, render, applyTheme, captureCity, restoreCity, saveCity, loadSavedCity, exportCity, importCity,
   get seed() { return SEED; },
 };

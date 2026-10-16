@@ -365,10 +365,6 @@ h1 { margin: 6px 0 0; font-size: calc(21px * var(--panel-text-scale)); font-weig
 .snap-status .live-dot { width: 5px; height: 5px; }
 .snap-status kbd { margin-left: auto; font-size: calc(7px * var(--panel-text-scale)); }
 
-.zones { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 10px 0; }
-.zones button { display: flex; align-items: center; justify-content: center; gap: 5px; padding: 8px 4px; color: var(--console-text); background: var(--console-raised); border-color: transparent; font-size: calc(8px * var(--panel-text-scale)); }
-.zones button.on { color: #203747; background: var(--accent); }
-.zone-shapes { margin: 8px 0; }
 .panel-note { margin: 7px 1px 12px; color: var(--console-dim); font-size: calc(8px * var(--panel-text-scale)); line-height: 1.5; }
 .dot { display: inline-block; width: 8px; height: 8px; flex: 0 0 8px; border-radius: 2px; }
 .residential { background: var(--zr); }
@@ -577,3 +573,9 @@ dialog p { color: var(--dim); line-height: 1.6; }
   .tool-help { padding: 8px 0; }
   .road-types small { display: none; }
 }
+.building-types { display: grid; gap: 7px; margin: 12px 0 18px; }
+.building-types button { display: flex; align-items: center; gap: 9px; padding: 10px 12px; text-align: left; color: var(--console-text); background: var(--console-raised); border-color: var(--console-line); }
+.building-types button.on { color: #203747; background: var(--accent); border-color: var(--accent); }
+.building-sizes button { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+.building-sizes small { font-size: .8em; opacity: .65; }
+.building-summary { font-size: .85em; color: var(--console-dim); margin: 12px 0; }

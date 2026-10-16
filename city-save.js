@@ -8,7 +8,8 @@
   const LEGACY_VERSION = 1;
   const ZONE_VERSION = 2;
   const PRIORITY_VERSION = 3;
-  const VERSION = 4;
+  const LANE_VERSION = 4;
+  const VERSION = 5;
   const LEGACY_COLS = Math.ceil(3000 / 34), LEGACY_ROWS = Math.ceil(2000 / 34);
   const CURRENT_COLS = Math.ceil(4800 / 34), CURRENT_ROWS = Math.ceil(3200 / 34);
   const LEGACY_ZONE_COUNT = LEGACY_COLS * LEGACY_ROWS;
@@ -26,6 +27,13 @@
   const ROAD_LANES = { STREET: 1, AVENUE: 2, ONEWAY: 2, ONEWAY_SINGLE: 1, HIGHWAY: 3, RING: 1 };
   const ONE_WAY_TYPES = new Set(['ONEWAY', 'ONEWAY_SINGLE']);
   const ZONE_BUILDING_TYPES = { 1: 'R', 2: 'C', 3: 'I' };
+  const PRESET_BUILDINGS = {
+    S: { width: 60, depth: 45, parking: 1 },
+    M: { width: 90, depth: 60, parking: 4 },
+    L: { width: 120, depth: 120, parking: 16 },
+  };
+  const ANGLE_LIMIT = Math.PI * 2;
+  const GEOMETRY_EPSILON = 1e-6;
 
   function invalid(path, detail) {
     throw new Error('Invalid city save: ' + path + ' ' + detail + '.');
@@ -76,9 +84,11 @@
 
   function validate(data) {
     object(data, 'save');
+    if (![LEGACY_VERSION, ZONE_VERSION, PRIORITY_VERSION, LANE_VERSION, VERSION].includes(data.version)) {
+      invalid('version', 'is unsupported');
+    }
     const zoneCount = data.version === LEGACY_VERSION ? LEGACY_ZONE_COUNT :
-      [ZONE_VERSION, PRIORITY_VERSION, VERSION].includes(data.version) ? ZONE_COUNT : 0;
-    if (!zoneCount) invalid('version', 'is unsupported');
+      data.version === VERSION ? null : ZONE_COUNT;
     integer(data.seed, 'seed', 0, 0xFFFFFFFF);
     finite(data.time, 'time', 0, 1e9);
 
@@ -91,7 +101,7 @@
       uniqueId(node.id, path + '.id', nodeIds);
       finite(node.x, path + '.x', -10000, 10000);
       finite(node.y, path + '.y', -10000, 10000);
-      const hasPriority = data.version === PRIORITY_VERSION || data.version === VERSION;
+      const hasPriority = data.version === PRIORITY_VERSION || data.version === LANE_VERSION || data.version === VERSION;
       const controls = hasPriority ? ['YIELD', 'STOP', 'SIGNAL', 'PRIORITY'] : ['YIELD', 'STOP', 'SIGNAL'];
       if (!controls.includes(node.control)) invalid(path + '.control', 'is not supported by this save version');
       if (hasPriority) {
@@ -105,7 +115,7 @@
         if (node.control === 'PRIORITY' && !selected.size) invalid(path + '.priorityEdges', 'must select an approach for a priority junction');
         if (node.control !== 'PRIORITY' && selected.size) invalid(path + '.priorityEdges', 'must be empty unless the node uses priority control');
       }
-      if (data.version === VERSION) {
+      if (data.version === LANE_VERSION || data.version === VERSION) {
         const laneRules = array(node.laneRules, path + '.laneRules', LANE_RULE_LIMIT);
         const sources = new Set();
         laneRules.forEach((rawRule, ruleIndex) => {
@@ -213,7 +223,7 @@
       }
     });
 
-    if (data.version === PRIORITY_VERSION || data.version === VERSION) {
+    if (data.version === PRIORITY_VERSION || data.version === LANE_VERSION || data.version === VERSION) {
       nodeById.forEach((node, nodeId) => {
         if (node.control === 'PRIORITY' && degreeByNode.get(nodeId) < 3) {
           invalid('nodes', 'contains a priority junction with fewer than three road arms');
@@ -228,7 +238,7 @@
       });
     }
 
-    if (data.version === VERSION) {
+    if (data.version === LANE_VERSION || data.version === VERSION) {
       nodeById.forEach((node, nodeId) => {
         const nodePath = 'nodes (ID ' + nodeId + ')';
         if (node.preSorting !== undefined) {
@@ -303,9 +313,12 @@
     centre.forEach((p, i) => point(p, 'river.centre[' + i + ']'));
     poly.forEach((p, i) => point(p, 'river.poly[' + i + ']'));
 
-    const zones = array(data.zones, 'zones', zoneCount);
-    if (zones.length !== zoneCount) invalid('zones', 'must contain exactly ' + zoneCount + ' cells');
-    zones.forEach((zone, index) => integer(zone, 'zones[' + index + ']', 0, 3));
+    let zones;
+    if (data.version !== VERSION) {
+      zones = array(data.zones, 'zones', zoneCount);
+      if (zones.length !== zoneCount) invalid('zones', 'must contain exactly ' + zoneCount + ' cells');
+      zones.forEach((zone, index) => integer(zone, 'zones[' + index + ']', 0, 3));
+    }
 
     const buildings = array(data.buildings, 'buildings', BUILDING_LIMIT);
     const occupiedCells = new Set();
@@ -316,10 +329,12 @@
       finite(building.y, path + '.y', -10000, 10000);
       if (!['R', 'C', 'I'].includes(building.type)) invalid(path + '.type', 'must be R, C, or I');
       integer(building.level, path + '.level', 1, 3);
-      integer(building.cell, path + '.cell', 0, zoneCount - 1);
-      if (occupiedCells.has(building.cell)) invalid(path + '.cell', 'duplicates an occupied cell');
-      occupiedCells.add(building.cell);
-      if (ZONE_BUILDING_TYPES[zones[building.cell]] !== building.type) invalid(path + '.type', 'does not match the zone at its cell');
+      if (data.version !== VERSION) {
+        integer(building.cell, path + '.cell', 0, zoneCount - 1);
+        if (occupiedCells.has(building.cell)) invalid(path + '.cell', 'duplicates an occupied cell');
+        occupiedCells.add(building.cell);
+        if (ZONE_BUILDING_TYPES[zones[building.cell]] !== building.type) invalid(path + '.type', 'does not match the zone at its cell');
+      }
       finite(building.service, path + '.service', 0, 1);
       finite(building.starve, path + '.starve', 0);
       finite(building.since, path + '.since', 0);
@@ -327,6 +342,45 @@
       finite(building.outTimer, path + '.outTimer', 0);
       finite(building.born, path + '.born', 0);
       finite(building.seed, path + '.seed', 0, 1);
+      if (data.version === VERSION) {
+        if (!['S', 'M', 'L', 'LEGACY'].includes(building.sizeKey)) invalid(path + '.sizeKey', 'must be S, M, L, or LEGACY');
+        const width = finite(building.width, path + '.width', Number.MIN_VALUE, 1000);
+        const depth = finite(building.depth, path + '.depth', Number.MIN_VALUE, 1000);
+        const angle = finite(building.angle, path + '.angle', -ANGLE_LIMIT, ANGLE_LIMIT);
+        const parking = integer(building.parking, path + '.parking', 0, 1000);
+        const entrance = point(building.entrance, path + '.entrance');
+        if (building.sizeKey === 'LEGACY') {
+          const size = ({ R: 17, C: 21, I: 26 })[building.type] + building.level * 4;
+          const wobble = 0.82 + 0.36 * building.seed;
+          const expectedWidth = size * wobble;
+          const expectedDepth = size * (building.type === 'I' ? 0.86 : 0.95) / wobble;
+          if (Math.abs(width - expectedWidth) > GEOMETRY_EPSILON || Math.abs(depth - expectedDepth) > GEOMETRY_EPSILON) {
+            invalid(path, 'has dimensions that do not match its legacy footprint');
+          }
+          if (parking !== 0) invalid(path + '.parking', 'must be 0 for a legacy building');
+          if (building.legacyUnattached !== undefined && typeof building.legacyUnattached !== 'boolean') {
+            invalid(path + '.legacyUnattached', 'must be a boolean');
+          }
+        } else {
+          const preset = PRESET_BUILDINGS[building.sizeKey];
+          if (width !== preset.width || depth !== preset.depth || parking !== preset.parking) {
+            invalid(path, 'has dimensions or parking that do not match its fixed size');
+          }
+          const expectedX = building.x + Math.sin(angle) * depth / 2;
+          const expectedY = building.y - Math.cos(angle) * depth / 2;
+          if (Math.abs(entrance.x - expectedX) > GEOMETRY_EPSILON || Math.abs(entrance.y - expectedY) > GEOMETRY_EPSILON) {
+            invalid(path + '.entrance', 'must be at the front centre of the building');
+          }
+          if (building.legacyUnattached !== undefined) invalid(path + '.legacyUnattached', 'is only supported for a legacy building');
+        }
+        if (building.access !== null) {
+          const access = object(building.access, path + '.access');
+          const edgeId = integer(access.edgeId, path + '.access.edgeId', 1, MAX_ID);
+          if (access.side !== -1 && access.side !== 1) invalid(path + '.access.side', 'must be -1 or 1');
+          const edge = edgeById.get(edgeId);
+          if (!edge || edge.type === 'RING') invalid(path + '.access.edgeId', 'must reference an existing non-ring road');
+        }
+      }
     });
 
     const camera = object(data.camera, 'camera');
@@ -348,43 +402,65 @@
   function migrate(data) {
     validate(data);
     if (data.version === VERSION) return data;
-    if (data.version === PRIORITY_VERSION) {
-      return validate({
+    let laneData;
+    if (data.version === LANE_VERSION) {
+      laneData = data;
+    } else if (data.version === PRIORITY_VERSION) {
+      laneData = validate({
         ...data,
-        version: VERSION,
+        version: LANE_VERSION,
         nodes: data.nodes.map(node => ({ ...node, laneRules: [] })),
       });
-    }
-    let priorityData;
-    if (data.version === ZONE_VERSION) {
-      priorityData = {
-        ...data,
-        version: PRIORITY_VERSION,
-        nodes: data.nodes.map(node => ({ ...node, priorityEdges: [] })),
-      };
     } else {
-      const migrated = {
-        ...data,
-        version: PRIORITY_VERSION,
-        nodes: data.nodes.map(node => ({ ...node, priorityEdges: [] })),
-        zones: new Array(ZONE_COUNT).fill(0),
-        buildings: data.buildings.map(building => ({
-          ...building,
-          cell: Math.floor(building.cell / LEGACY_COLS) * CURRENT_COLS + (building.cell % LEGACY_COLS),
-        })),
-      };
-      for (let oldCell = 0; oldCell < data.zones.length; oldCell++) {
-        const row = Math.floor(oldCell / LEGACY_COLS), column = oldCell % LEGACY_COLS;
-        migrated.zones[row * CURRENT_COLS + column] = data.zones[oldCell];
+      let priorityData;
+      if (data.version === ZONE_VERSION) {
+        priorityData = {
+          ...data,
+          version: PRIORITY_VERSION,
+          nodes: data.nodes.map(node => ({ ...node, priorityEdges: [] })),
+        };
+      } else {
+        const migrated = {
+          ...data,
+          version: PRIORITY_VERSION,
+          nodes: data.nodes.map(node => ({ ...node, priorityEdges: [] })),
+          zones: new Array(ZONE_COUNT).fill(0),
+          buildings: data.buildings.map(building => ({
+            ...building,
+            cell: Math.floor(building.cell / LEGACY_COLS) * CURRENT_COLS + (building.cell % LEGACY_COLS),
+          })),
+        };
+        for (let oldCell = 0; oldCell < data.zones.length; oldCell++) {
+          const row = Math.floor(oldCell / LEGACY_COLS), column = oldCell % LEGACY_COLS;
+          migrated.zones[row * CURRENT_COLS + column] = data.zones[oldCell];
+        }
+        priorityData = migrated;
       }
-      priorityData = migrated;
+      validate(priorityData);
+      laneData = validate({
+        ...priorityData,
+        version: LANE_VERSION,
+        nodes: priorityData.nodes.map(node => ({ ...node, laneRules: [] })),
+      });
     }
-    validate(priorityData);
-    return validate({
-      ...priorityData,
-      version: VERSION,
-      nodes: priorityData.nodes.map(node => ({ ...node, laneRules: [] })),
+    const buildings = laneData.buildings.map(building => {
+      const size = ({ R: 17, C: 21, I: 26 })[building.type] + building.level * 4;
+      const wobble = 0.82 + 0.36 * building.seed;
+      return {
+        ...building,
+        sizeKey: 'LEGACY',
+        width: size * wobble,
+        depth: size * (building.type === 'I' ? 0.86 : 0.95) / wobble,
+        angle: 0,
+        parking: 0,
+        entrance: { x: building.x, y: building.y },
+        access: null,
+        legacyUnattached: true,
+      };
     });
+    const current = { ...laneData, version: VERSION, buildings };
+    delete current.zones;
+    return validate(current);
   }
 
   return { VERSION, ZONE_COUNT, validate, migrate };
