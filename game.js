@@ -1479,6 +1479,7 @@ function lanePreparationSpeed(car,lane,movement,startS=0) {
 // Work backwards from the stop line (or kerb) so waiting for a gap never
 // consumes the distance needed for the remaining adjacent lane changes.
 const MERGE_GAP_RECOVERY_SECONDS = 5;
+const CONNECTOR_MERGE_DEADLOCK_SECONDS = 5;
 const ROAD_NO_PROGRESS_RECOVERY_SECONDS = 120;
 
 function laneChangeDistanceBudget(car, lane, target) {
@@ -1700,6 +1701,16 @@ class Car {
       trackLabel:diagnosticTrackLabel(source),s:this.s});
     this.kill();
     return false;
+  }
+
+  despawnFromStrand(reason) {
+    if (this.dead || !this.track) return false;
+    const source = this.track;
+    trafficDiagnostics.recordTripFailure({vehicleId:this.id,destinationId:this.target?.id ?? null,
+      simTime:W.time,phase:this.phase,reason,recoveryAttempted:false,trackId:source.id,
+      trackLabel:diagnosticTrackLabel(source),s:this.s});
+    this.kill();
+    return true;
   }
 
   findLeader() {
@@ -2005,6 +2016,13 @@ class Car {
       this.hadClaimDuringStop = false;
     }
     if (this.track && this.phase !== 'ENTER' && this.phase !== 'VISIT') {
+      const connectorMergeDeadlock = this.claimClearing && this.track.kind === 'LANE' &&
+        this.wantIdx !== null && this.wantIdx !== this.track.idx && this.s < this.len / 2 &&
+        this.lastMotionDiagnostic.limiter === 'lane-merge-hold';
+      if (connectorMergeDeadlock && this.noProgressSeconds >= CONNECTOR_MERGE_DEADLOCK_SECONDS) {
+        this.despawnFromStrand('connector-clearance-merge-deadlock');
+        return;
+      }
       if (this.waitReason === 'merge-gap' && this.noProgressSeconds >= MERGE_GAP_RECOVERY_SECONDS) {
         this.recoverFromStrand('merge-gap-timeout');
         return;
@@ -4413,6 +4431,62 @@ function drawBuildings(dark,detail) {
   for(const b of CITY.buildings)drawLot(b,dark,detail);
 }
 
+function drawSelectedCarRoute(alpha) {
+  const car = W.selectedCar;
+  if (toolCategory(W.tool) !== 'city' || !car || !W.cars.includes(car)) return;
+
+  const departure = car.phase === 'BACK' ? car.dest : car.origin;
+  const target = car.phase === 'BACK' ? car.origin : car.dest;
+  const route = car.route.slice(car.ri);
+  if (car.track && route.length && route[0] === car.track) {
+    ctx.save();
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < route.length; i++) {
+      const track = route[i];
+      const fromS = i === 0 ? clamp(car.s, 0, track.length) : 0;
+      const toS = i === route.length - 1
+        ? clamp(car.goalS, fromS, track.length)
+        : track.length;
+      const steps = Math.max(1, Math.ceil((toS - fromS) / 8));
+      for (let step = 0; step <= steps; step++) {
+        const s = fromS + (toS - fromS) * step / steps;
+        const p = i === 0 && step === 0
+          ? {x: lerp(car.ppx, car.px, alpha), y: lerp(car.ppy, car.py, alpha)}
+          : track.pos(s);
+        if (!started) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+        started = true;
+      }
+    }
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.setLineDash([3 / CAM.z, 5 / CAM.z]);
+    ctx.strokeStyle = 'rgba(18, 32, 44, 0.88)';
+    ctx.lineWidth = 5 / CAM.z;
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(75, 219, 177, 0.98)';
+    ctx.lineWidth = 2 / CAM.z;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  const drawEndpoint = (building, color, fill) => {
+    if (!building) return;
+    ctx.beginPath();
+    ctx.arc(building.x, building.y, Math.max(building.size * 0.8, 10 / CAM.z), 0, TAU);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2 / CAM.z;
+    ctx.stroke();
+  };
+  ctx.save();
+  drawEndpoint(departure, '#4fd8a7', 'rgba(79, 216, 167, 0.12)');
+  drawEndpoint(target, '#ffc04d', 'rgba(255, 192, 77, 0.12)');
+  ctx.restore();
+}
+
 function drawCars(alpha, detail) {
   for (const c of W.cars) {
     if (c.phase === 'VISIT' || (!c.track && c.phase !== 'ENTER')) continue;
@@ -4819,6 +4893,7 @@ function render(alpha) {
   drawRoads(detail);
   drawBuildings(dark, detail);
   if (detail) drawSignals();
+  drawSelectedCarRoute(alpha);
   drawCars(alpha, detail);
   drawOverlays();
   if (W.debug) drawDebug();
